@@ -25,7 +25,7 @@ echo "index.js 파일을 생성합니다..."
 cat << 'EOF' > index.js
 const express = require('express');
 const app = express();
-const PORT = 3001;  // 사용할 포트 번호
+const PORT = 4000;  // 사용할 포트 번호
 app.get('/', (req, res) => {
   res.send('Hello, World!');  // 기본 응답
 });
@@ -49,13 +49,14 @@ npm install mysql2
 echo "nginx를 설치합니다"
 brew install nginx
 
-echo "nginx를 시작합니다"
 brew services start nginx
+npm install --save coolsms-node-sdk
 
-
-echo "3000포트를 가리키고 있는 현재 터널을 터널의 대상 URL인 nginx가 리스닝하는 포트(8080)로 변경합니다."
+echo "4000포트를 가리키고 있는 현재 터널을 터널의 대상 URL인 nginx가 리스닝하는 포트(8080)로 변경합니다."
 cloudflared tunnel --url 127.0.0.1:8080
 
+npm install axios cors dotenv
+npm install sequelize
 #mysql 서버설정은 /opt/homebrew/etc/my.conf로 할 수 있음.
 
 echo "설정이 완료되었습니다. 'node index.js' 명령어로 서버를 시작할 수 있습니다."
