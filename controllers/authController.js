@@ -186,20 +186,15 @@ exports.signup = async (req, res) => {
       name,
       birthday6,
       phone,
-      carrier,
-      gender,
-      foreigner,
-      // 약관
-      agreePersonalInfo,
-      agreeUniqueID,
-      agreeTelecom,
-      agreeCertService,
-      agreeNaverPrivacy,
-      // PortOne 인증(간편 예시)
-      verificationId
+      carrier,          // 현재 User 모델에 없음
+      gender,           // "MALE" | "FEMALE"로 올 수 있음 → 모델은 enum('male','female')
+      foreigner,        // 현재 User 모델에 없음 (boolean?)
+      verificationId,   // 문자 인증용
+      // 이하 약관 관련 필드는 모델에 없으므로, DB 저장하려면 모델 칼럼 추가 필요
+      // agreePersonalInfo, agreeUniqueID, etc...
     } = req.body;
 
-    // (1) smsStore에서 phone에 해당하는 data 찾기
+    // (1) smsStore에서 phone에 해당하는 기록 찾기
     const record = smsStore[phone];
     if (!record) {
       return res.status(400).json({ message: 'No SMS record found' });
@@ -215,47 +210,50 @@ exports.signup = async (req, res) => {
       return res.status(400).json({ message: 'INVALID_CODE' });
     }
 
-    // (2) 실제 PortOne 인증 결과를 다시 조회할 수도 있음
-    // ex) const verificationStatus = await portoneService.getIdentityVerificationStatus(verificationId);
-    // 만약 verificationStatus.response.status !== 'completed' 이면 에러...
+    // (2) birthday6 → date_of_birth 변환
+    const dateOfBirth = convertBirthday6ToDate(birthday6);
 
-    // (3) 여기까지 성공이면 => DB에 가입 처리
-    // 비밀번호 해싱은 꼭 bcrypt 등 사용 (예시는 간단화)
-    const newUser = await User.create({
+    // (3) gender 변환: "MALE" → "male", "FEMALE" → "female"
+    let normalizedGender = null;
+    if (gender && typeof gender === 'string') {
+      const lower = gender.toLowerCase();
+      if (lower === 'male' || lower === 'female') {
+        normalizedGender = lower;
+      }
+    }
+
+    // (4) 실제 DB 가입 처리 (User.createUser 메서드 사용)
+    //     password 해싱, email unique 등은 createUser 내부에서 처리됨
+    const newUser = await User.createUser({
       email,
-      password, 
+      password,         // createUser 안에서 bcrypt.hash 처리
       name,
-      birthday6,
       phone,
-      carrier,
-      gender,
-      foreigner,
-      // 약관 동의(컬럼 생성 필요)
-      agree_personal_info: agreePersonalInfo,
-      agree_unique_id: agreeUniqueID,
-      agree_telecom: agreeTelecom,
-      agree_cert_service: agreeCertService,
-      agree_naver_privacy: agreeNaverPrivacy
+      date_of_birth: dateOfBirth,  
+      gender: normalizedGender,    // 'male' or 'female'
+      provider: 'local',
+      role: 'user',
+      is_completed: false, 
     });
 
-    // (4) smsStore에서 삭제
+    // (5) smsStore에서 삭제 (인증 과정을 1회용으로 처리)
     delete smsStore[phone];
 
-    // 응답
+    // (6) 응답
     return res.json({
       message: '가입 성공',
       user: {
         id: newUser.id,
         email: newUser.email,
-        name: newUser.name
-      }
+        name: newUser.name,
+        // 필요 시 phone, date_of_birth, gender 등 추가
+      },
     });
   } catch (error) {
     console.error('signup error:', error);
     return res.status(500).json({ message: '서버 오류' });
   }
 };
-
 exports.checkEmail = async (req, res) => {
   try {
     const { email } = req.body;
