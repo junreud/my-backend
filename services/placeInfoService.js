@@ -1,53 +1,134 @@
+// services/placeInfoService.js
 const puppeteer = require('puppeteer');
+const { MOBILE_USER_AGENT, PROXY_SERVER } = require('../config/crawler');
 
-async function getPlaceInfoFromUrl(url) {
-  let browser;
+/**
+ * 네이버 플레이스 URL(모바일 버전)에서
+ *  - 홈 탭(/home) → 업체 기본 정보, 메뉴 목록, ...
+ *  - 정보 탭(/information) → 소개글
+ *  - 리뷰 탭(/review/ugc?type=photoView) → 블로그 리뷰 제목
+ *
+ * @param {string} inputUrl
+ * @returns {Promise<{
+ *    placeId: string,
+ *    name: string,
+ *    category: string,
+ *    address: string,
+ *    x: number, // 경도
+ *    y: number, // 위도
+ *    menuList: Array<{ name: string, price: string, description: string, images: any[] }>,
+ *    introduction: string,
+ *    blogReviewTitles: string[]
+ * } | null>}
+ */
+async function getPlaceInfoFromUrl(inputUrl) {
+  let browser = null;
+
   try {
-    browser = await puppeteer.launch({ headless: true });
+    // Puppeteer 브라우저 실행
+    const launchOptions = { headless: true };
+    if (PROXY_SERVER) {
+      launchOptions.args = [`--proxy-server=${PROXY_SERVER}`];
+    }
+    browser = await puppeteer.launch(launchOptions);
+
     const page = await browser.newPage();
+    await page.setUserAgent(MOBILE_USER_AGENT);
 
-    // networkidle2 옵션으로 페이지 로딩이 충분히 끝날 때까지 기다림
-    await page.goto(url, { waitUntil: 'networkidle2' });
+    // ──────────────────────────────────────────
+    // 1) 홈 탭 (/home)
+    // ──────────────────────────────────────────
+    await page.goto(inputUrl, { waitUntil: 'networkidle2' });
 
-    // 특정 요소가 나타날 때까지 기다리기 (예: 업체명 요소, 실제 페이지의 셀렉터로 수정)
-    await page.waitForSelector('h1'); // 실제 업체명이 들어있는 셀렉터 사용
-    await page.waitForFunction('window.__APOLLO_STATE__ || undifined', { timeout: 5000 });
-    // __APOLLO_STATE__ 추출
-    const apolloData = await page.evaluate(() => window.__APOLLO_STATE__ || null);
-    console.log(window.__APOLLO_STATE__);
-    
-    if (!apolloData) {
-      console.warn('[WARN] __APOLLO_STATE__가 없습니다. 페이지 구조가 변경되었거나 올바른 URL이 아닐 수 있습니다.');
-      return null;
-    }
+    // Apollo State 로딩 대기
+    await page.waitForFunction(() => window.__APOLLO_STATE__ !== undefined, { timeout: 10000 });
+    const apolloDataHome = await page.evaluate(() => window.__APOLLO_STATE__ || null);
+    if (!apolloDataHome) return null;
 
-    const placeKey = Object.keys(apolloData).find(k => k.startsWith('PlaceDetailBase:'));
-    if (!placeKey) {
-      console.warn('[WARN] PlaceDetailBase 키를 찾지 못했습니다.');
-      return null;
-    }
-
-    const placeDetail = apolloData[placeKey];
-    if (!placeDetail) {
-      console.warn('[WARN] placeDetail 객체가 비어있습니다.');
-      return null;
-    }
-
-    const placeId = placeDetail.id || '';
-    const name = placeDetail.name || '';
-    const category = placeDetail.category || '';
-    const address = placeDetail.roadAddress || placeDetail.address || '';
-    
+    // 파싱: placeId, name, category, address, x, y, menuList
+    let placeId = '', name = '', category = '', address = '';
     let x = 0, y = 0;
-    if (placeDetail.coordinate && placeDetail.coordinate.x && placeDetail.coordinate.y) {
-      x = parseFloat(placeDetail.coordinate.x);
-      y = parseFloat(placeDetail.coordinate.y);
+    let menuList = [];
+
+    // PlaceDetailBase 키 찾기
+    const placeBaseKey = Object.keys(apolloDataHome).find(k => k.startsWith('PlaceDetailBase:'));
+    if (placeBaseKey) {
+      const placeInfo = apolloDataHome[placeBaseKey] || {};
+      placeId  = placeInfo.id || '';
+      name     = placeInfo.name || '';
+      category = placeInfo.category || '';
+      address  = placeInfo.roadAddress || placeInfo.address || '';
+      if (placeInfo.coordinate && placeInfo.coordinate.x && placeInfo.coordinate.y) {
+        x = parseFloat(placeInfo.coordinate.x);
+        y = parseFloat(placeInfo.coordinate.y);
+      }
     }
 
-    const result = { placeId, name, category, address, x, y };
-    console.log('[INFO] 파싱 결과:', result);
-    return result;
+    // 메뉴 파싱
+    try {
+      const menuKeys = Object.keys(apolloDataHome).filter(k => k.startsWith('Menu:'));
+      menuList = menuKeys.map(mKey => {
+        const mInfo = apolloDataHome[mKey];
+        return {
+          name: mInfo.name || '',
+          price: mInfo.price || '',
+          description: mInfo.description || '',
+          images: mInfo.images || [],
+        };
+      });
+    } catch (err) {
+      console.warn('[WARN] menu parse error:', err.message);
+    }
 
+    // ──────────────────────────────────────────
+    // 2) 정보 탭 (/information) → 소개글
+    // ──────────────────────────────────────────
+    const infoUrl = inputUrl.replace('/home', '/information');
+    await page.goto(infoUrl, { waitUntil: 'networkidle2' });
+
+    let introduction = '';
+    try {
+      const introSelector = 'div.T8RFa.CEyr5';
+      await page.waitForSelector(introSelector, { timeout: 3000 });
+      introduction = await page.$eval(introSelector, el => el.textContent.trim());
+    } catch (err) {
+      console.warn('[WARN] introduction parse failed:', err.message);
+    }
+
+    // ──────────────────────────────────────────
+    // 3) 리뷰 탭 (/review/ugc?type=photoView) → 블로그 리뷰 제목(최대 10개)
+    // ──────────────────────────────────────────
+    const reviewUrl = inputUrl.replace('/home', '/review/ugc?type=photoView');
+    await page.goto(reviewUrl, { waitUntil: 'networkidle2' });
+
+    let blogReviewTitles = [];
+    try {
+      const listSelector = '#app-root div.place_section_content ul > li';
+      await page.waitForSelector(listSelector, { timeout: 3000 });
+      blogReviewTitles = await page.$$eval(listSelector, (items) =>
+        items.slice(0, 10).map(li => {
+          const sel = li.querySelector('a > div.pui__dGLDWy');
+          return sel ? sel.textContent.trim() : '';
+        })
+      );
+    } catch (err) {
+      console.warn('[WARN] blogReviewTitles parse failed:', err.message);
+    }
+    
+    // ──────────────────────────────────────────
+    // 결과 반환
+    // ──────────────────────────────────────────
+    const result = {
+      placeId,
+      name,
+      category,
+      address,
+      x,
+      y,
+      menuList,
+      introduction,
+      blogReviewTitles
+    };
   } catch (err) {
     console.error('[ERROR] getPlaceInfoFromUrl:', err);
     return null;
@@ -59,3 +140,22 @@ async function getPlaceInfoFromUrl(url) {
 }
 
 module.exports = { getPlaceInfoFromUrl };
+// if (require.main === module) {
+//   (async () => {
+//     const inputUrl = process.argv[2];
+//     if (!inputUrl) {
+//       console.error('Usage: node placeInfoService.js "https://m.place.naver.com/..."');
+//       process.exit(1);
+//     }
+
+//     console.log('[INFO] CLI Test: getPlaceInfoFromUrl:', inputUrl);
+
+//     try {
+//       const result = await getPlaceInfoFromUrl(inputUrl);
+//       console.log('=== Result ===');
+//       console.dir(result, { depth: null });
+//     } catch (error) {
+//       console.error('Error during getPlaceInfoFromUrl test:', error);
+//     }
+//   })();
+// }

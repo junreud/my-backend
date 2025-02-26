@@ -128,4 +128,7 @@ router.post('/check-email', authController.checkEmail);
 
 router.post('/social-addinfo', authController.socialAddInfo);
 
+
+router.post('/signup', authController.signup);
+
 module.exports = router;
