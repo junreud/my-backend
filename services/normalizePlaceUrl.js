@@ -1,5 +1,5 @@
 // services/normalizePlaceUrl.js
-const puppeteer = require('puppeteer');
+import puppeteer from 'puppeteer';
 
 /**
  * 짧은 URL(naver.me)을 해제하여 최종 URL을 반환하는 함수

@@ -1,5 +1,5 @@
 // config/crawler.js
-require('dotenv').config();
+import 'dotenv/config';
 
 module.exports = {
     MOBILE_USER_AGENT: 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) ' +

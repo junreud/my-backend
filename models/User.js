@@ -1,7 +1,7 @@
 // models/User.js
-const { DataTypes, Model } = require("sequelize");
-const sequelize = require("../config/db"); // Sequelize 인스턴스
-const bcrypt = require("bcrypt");
+import { DataTypes, Model } from "sequelize";
+import sequelize from "../config/db.js";  // 필요 시 .js 확장자
+import bcrypt from "bcrypt";
 
 class User extends Model {
   /**
@@ -15,7 +15,6 @@ class User extends Model {
     provider = "local",
     provider_id = null,
     phone = null,
-    date_of_birth = null,
     birthday6 = null,  // 새로 추가된 raw YYMMDD
     gender = null,     // 'male' or 'female'
     carrier = null,    // 통신사
@@ -31,11 +30,10 @@ class User extends Model {
     const user = await User.create({
       email,
       password: hashedPassword,
-      name,
       provider,
       provider_id,
+      name,
       phone,
-      date_of_birth,
       birthday6,  // 저장
       gender,
       carrier,
@@ -151,11 +149,6 @@ User.init(
     // 7) phone
     phone: {
       type: DataTypes.STRING(20),
-      allowNull: true,
-    },
-    // 8) date_of_birth (예: YYYY-MM-DD)
-    date_of_birth: {
-      type: DataTypes.DATEONLY,
       allowNull: true,
     },
     // (추가) birthday6 (YYMMDD 원본)

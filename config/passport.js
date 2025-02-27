@@ -1,12 +1,13 @@
-const passport = require('passport');
-const LocalStrategy = require('passport-local').Strategy;
-const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
-const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const User = require('../models/User');
-const KakaoStrategy = require('passport-kakao').Strategy;
+//config/passport.js
 
-require('dotenv').config(); // env 파일에서 SECRET 키 등을 불러온다고 가정
+import passport from 'passport';
+import { Strategy as LocalStrategy } from 'passport-local';
+import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import User from '../models/User';
+import { Strategy as KakaoStrategy } from 'passport-kakao';
 
+import 'dotenv/config';
 // [1] 로컬 전략 (이메일, 비밀번호)
 passport.use(
   new LocalStrategy(

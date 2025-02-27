@@ -1,6 +1,6 @@
 // services/portoneService.js
-const axios = require('axios');
-require('dotenv').config();
+import axios from 'axios';
+import 'dotenv/config';
 
 const PORTONE_API_SECRET = process.env.PORTONE_API_SECRET;
 const PORTONE_API_BASE_URL = 'https://api.portone.io';

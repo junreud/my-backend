@@ -1,7 +1,8 @@
-const express = require('express');
+import express from 'express';
+import passport from 'passport';
+import authController from '../controllers/authController.js'; // 확장자 .js가 필요할 수 있음
+
 const router = express.Router();
-const passport = require('passport');
-const authController = require('../controllers/authController');
 
 
 // ----- 로컬 로그인 -----

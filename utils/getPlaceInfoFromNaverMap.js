@@ -3,8 +3,7 @@
  * Puppeteer를 이용해 네이버 플레이스 URL의 업체 정보를 크롤링하는 예시
  */
 
-const puppeteer = require('puppeteer');
-
+import puppeteer from 'puppeteer';
 // 네이버 플레이스 페이지가 완전히 로드되는 시간을 기다리기 위한 sleep 함수
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
