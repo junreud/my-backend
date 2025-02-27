@@ -1,8 +1,7 @@
 // services/keywordRankingService.js
-const { getPlaceInfoFromUrl } = require('./placeInfoService');
-const { aggregateTextsWithWeights } = require('./textAggregatorService');
-const { tokenizeAndScore, getTopTokens } = require('./textMiningService');
-const { getKeywordDataFromNaver } = require('./naverAdApiService');
+import { getNaverPlaceFullInfo } from './placeInfoService.js';
+import { analyzePlaceWithChatGPT } from './chatGPTService.js';
+import { getKeywordDataFromNaver } from './naverAdApiService.js';
 
 /**
  * 1) placeUrl로부터 placeInfo 수집 (Puppeteer)
@@ -13,24 +12,17 @@ const { getKeywordDataFromNaver } = require('./naverAdApiService');
  */
 async function getPlaceKeywordRanking(placeUrl) {
   // 1) 크롤링
-  const placeInfo = await getPlaceInfoFromUrl(placeUrl);
+  const placeInfo = await getNaverPlaceFullInfo(placeUrl);
   if (!placeInfo) {
     console.warn('[WARN] placeInfo is null');
     return [];
   }
 
-  // 2) 텍스트 모으기 + 가중치
-  const textEntries = aggregateTextsWithWeights(placeInfo);
-  // ex) [ { text, weight, type: "menuName" }, ...]
-
-  // 3) tokenizeAndScore
-  const { tokenScoreMap } = tokenizeAndScore(textEntries);
-  // tokenScoreMap: { "사당역": 2.5, "고기집": 3.7, ... }
-
-  // 4) 내부 점수 높은 상위 30개 정도만 후보로 삼아 네이버 광고 API를 조회 (예시)
-  //    너무 많이 조회하면 API 비용/한도가 있을 수 있으므로, 적절히 제한
-  const topTokens = getTopTokens(tokenScoreMap, 30); // [{ token, score }, ...]
-  const candidateKeywords = topTokens.map(item => item.token);
+  const candidateKeywords = await analyzePlaceWithChatGPT(placeInfo);
+  if (!candidateKeywords.length) {
+    console.warn('[WARN] no candidate keywords from ChatGPT');
+    return [];
+  }
 
   // 네이버 검색광고 API 조회
   const externalDataList = await getKeywordDataFromNaver(candidateKeywords);

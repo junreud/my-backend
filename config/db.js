@@ -1,6 +1,6 @@
 // config/db.js
-require('dotenv').config();
-const { Sequelize } = require('sequelize');
+import 'dotenv/config';
+import { Sequelize } from 'sequelize/types';
 
 const sequelize = new Sequelize(
   process.env.DB_NAME,         // DB 이름

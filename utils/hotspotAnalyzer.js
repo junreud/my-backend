@@ -6,11 +6,8 @@
  * 3) 리뷰 수가 부족하면 → 근처 업체를 추가로 검색
  * 4) 최종적으로 "핫스팟" 후보(역, 스키장, etc.) 추출
  */
-
-const axios = require('axios');
-const cheerio = require('cheerio'); // 혹은 아래처럼 JSON 응답이면 cheerio 없이 가능
-// const { runCrawler } = require('./crawlerService'); // 필요시
-// ...등등
+import axios from 'axios';
+import cheerio from 'cheerio';
 
 // 네이버 검색 API 인증 정보 (데모)
 const NAVER_CLIENT_ID = 'YOUR_CLIENT_ID';

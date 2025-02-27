@@ -1,10 +1,11 @@
 /**
  * routes/keywordRoutes.js
  */
-const express = require('express');
+import express from 'express';
+import keywordController from '../controllers/keywordController.js';
+
 const router = express.Router();
-const keywordController = require('../controllers/keywordController');
 
-router.get('/final', keywordController.getFinalKeywords);
-
+router.get('/analysis', keywordController.getFinalKeywords);
+// router.get('/keyword/parallel-sse', getParallelSSE);
 module.exports = router;
