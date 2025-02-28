@@ -1,4 +1,4 @@
-// services/normalizePlaceUrl.js
+// services/normalizePlaceUrl.js (ESM 버전)
 import puppeteer from 'puppeteer';
 
 /**
@@ -9,7 +9,7 @@ import puppeteer from 'puppeteer';
 async function resolveShortUrl(url) {
   let browser;
   try {
-    browser = await puppeteer.launch({ headless: true });
+    browser = await puppeteer.launch({ headless: "new" });
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'networkidle2' });
     return page.url();
@@ -26,7 +26,7 @@ async function resolveShortUrl(url) {
  * @param {string} inputUrl - 축소형, PC형, Mobile형 URL 등
  * @returns {Promise<string|null>} - 정규화된 URL 또는 null (실패 시)
  */
-async function normalizePlaceUrl(inputUrl) {
+export async function normalizePlaceUrl(inputUrl) {
   let resolvedUrl = inputUrl;
   // 축소형 URL 여부 확인
   if (inputUrl.includes('naver.me/')) {
@@ -46,5 +46,3 @@ async function normalizePlaceUrl(inputUrl) {
   console.log('[INFO] 정규화된 URL:', normalizedUrl);
   return normalizedUrl;
 }
-
-module.exports = { normalizePlaceUrl };

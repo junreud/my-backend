@@ -3,11 +3,7 @@
 // 라이브러리 import
 import jwt from 'jsonwebtoken';
 import 'dotenv/config';
-import axios from 'axios';
-import crypto from 'crypto';
-import puppeteer from 'puppeteer';
-import fs from 'fs';
-import path from 'path';
+
 
 // 로컬 모듈 import (필요시 .js 확장자)
 import User from '../models/User.js';
