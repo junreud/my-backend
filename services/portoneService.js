@@ -1,4 +1,4 @@
-// services/portoneService.js
+// services/portoneService.js (ESM 버전)
 import axios from 'axios';
 import 'dotenv/config';
 
@@ -9,7 +9,8 @@ function getAuthHeader() {
   return { Authorization: `PortOne ${PORTONE_API_SECRET}` };
 }
 
-async function createIdentityVerification(createPayload) {
+// 1) 본인인증 생성
+export async function createIdentityVerification(createPayload) {
   try {
     const response = await axios.post(
       `${PORTONE_API_BASE_URL}/identity-verifications`,
@@ -26,7 +27,8 @@ async function createIdentityVerification(createPayload) {
   }
 }
 
-async function getIdentityVerification(identityVerificationId) {
+// 2) 본인인증 정보 조회
+export async function getIdentityVerification(identityVerificationId) {
   try {
     const response = await axios.get(
       `${PORTONE_API_BASE_URL}/identity-verifications/${identityVerificationId}`,
@@ -42,7 +44,8 @@ async function getIdentityVerification(identityVerificationId) {
   }
 }
 
-async function sendIdentityVerification(identityVerificationId, sendPayload) {
+// 3) 본인인증 SMS 발송
+export async function sendIdentityVerification(identityVerificationId, sendPayload) {
   try {
     const response = await axios.post(
       `${PORTONE_API_BASE_URL}/identity-verifications/${identityVerificationId}/send`,
@@ -59,7 +62,8 @@ async function sendIdentityVerification(identityVerificationId, sendPayload) {
   }
 }
 
-async function confirmIdentityVerification(identityVerificationId, confirmPayload) {
+// 4) 본인인증 완료(Confirm)
+export async function confirmIdentityVerification(identityVerificationId, confirmPayload) {
   try {
     const response = await axios.post(
       `${PORTONE_API_BASE_URL}/identity-verifications/${identityVerificationId}/confirm`,
@@ -76,7 +80,8 @@ async function confirmIdentityVerification(identityVerificationId, confirmPayloa
   }
 }
 
-async function resendIdentityVerification(identityVerificationId, storeId) {
+// 5) 본인인증 문자 재전송
+export async function resendIdentityVerification(identityVerificationId, storeId) {
   try {
     let url = `${PORTONE_API_BASE_URL}/identity-verifications/${identityVerificationId}/resend`;
     if (storeId) {
@@ -92,11 +97,3 @@ async function resendIdentityVerification(identityVerificationId, storeId) {
     throw new Error('Failed to resend identity verification');
   }
 }
-
-module.exports = {
-  createIdentityVerification,
-  getIdentityVerification,
-  sendIdentityVerification,
-  confirmIdentityVerification,
-  resendIdentityVerification,
-};
