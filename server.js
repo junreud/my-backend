@@ -1,13 +1,21 @@
-const express = require('express');
-const cors = require('cors');
+console.log('=== Start server.js ===');
 
-//인스턴스
-const passport = require('./config/passport'); 
-const authRoutes = require('./routes/authRoutes');
-const keywordRoutes = require('./routes/keywordRoutes');
-const sequelize = require('./config/db');
+import express from 'express';
+import cors from 'cors';
+import sequelize from './config/db.js';
+import passport from './config/passport.js';
+
+import authRoutes from './routes/authRoutes.js';
+import keywordRoutes from './routes/keywordRoutes.js';
 
 const app = express();
+
+// 전역 미들웨어로 모든 요청 로깅
+app.use((req, res, next) => {
+  console.log('[DEBUG] Incoming request:', req.method, req.url);
+  next();
+});
+
 
 app.use(cors(
   {

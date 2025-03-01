@@ -97,3 +97,11 @@ export async function resendIdentityVerification(identityVerificationId, storeId
     throw new Error('Failed to resend identity verification');
   }
 }
+
+export default {
+  createIdentityVerification,
+  getIdentityVerification,
+  sendIdentityVerification,
+  confirmIdentityVerification,
+  resendIdentityVerification
+};
