@@ -8,4 +8,4 @@ const router = express.Router();
 
 router.get('/analysis', keywordController.getFinalKeywords);
 // router.get('/keyword/parallel-sse', getParallelSSE);
-module.exports = router;
+export default router;

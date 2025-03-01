@@ -33,11 +33,11 @@ function generateSignature(timestamp, method, uri, secretKey) {
 // ---------------------------------------------------------
 // 3) (메인) 검색량 정보 가져오기
 //    - 한 번에 최대 5개씩 호출, 각 청크 처리 후 0.5초 대기
+//    - 최종적으로 검색량 내림차순 정렬 및 rank 추가
 // ---------------------------------------------------------
 /**
  * @param {string[]} keywords 키워드 배열
- * @returns {Promise<Array<{ keyword: string, monthlySearchVolume: number }>>}
- *  - monthlySearchVolume 만 반환
+ * @returns {Promise<Array<{ rank: number, keyword: string, monthlySearchVolume: number }>>}
  */
 export async function getSearchVolumes(keywords = []) {
   if (!API_KEY || !SECRET_KEY || !CUSTOMER_ID) {
@@ -52,6 +52,7 @@ export async function getSearchVolumes(keywords = []) {
   const chunkSize = 5;
   const mergedResults = [];
 
+  // 키워드를 5개 단위로 잘라서 순차 호출
   for (let i = 0; i < keywords.length; i += chunkSize) {
     // 3-1) slice 추출
     const slice = keywords.slice(i, i + chunkSize);
@@ -70,12 +71,21 @@ export async function getSearchVolumes(keywords = []) {
     volumeMap[item.keyword] = item;
   });
 
-  // 키워드 입력 순서대로 결과 구성 (monthSearchVolume가 없으면 0)
+  // 키워드 입력 순서대로 기본 배열을 구성 (없으면 검색량 0)
   const finalArr = keywords.map(kw => {
     return volumeMap[kw] || { keyword: kw, monthlySearchVolume: 0 };
   });
 
-  return finalArr;
+  // ---- (추가) 검색량 기준 내림차순 정렬 + rank 부여
+  const sortedArr = [...finalArr].sort((a, b) => b.monthlySearchVolume - a.monthlySearchVolume);
+  const rankedArr = sortedArr.map((item, idx) => ({
+    rank: idx + 1,
+    keyword: item.keyword,
+    monthlySearchVolume: item.monthlySearchVolume,
+  }));
+
+  // 내림차순+순위가 매겨진 배열 반환
+  return rankedArr;
 }
 
 // ---------------------------------------------------------
@@ -114,16 +124,14 @@ async function fetchKeywordToolSlice(sliceKeywords) {
 
     // 결과 가공
     return list.map(item => {
-      // 키워드명
       const kw = item.relKeyword;
-      // PC + 모바일 검색량 합산
       const monthlyVol =
         parseInt(item.monthlyPcQcCnt || 0, 10) +
         parseInt(item.monthlyMobileQcCnt || 0, 10);
 
       return {
         keyword: kw,
-        monthlySearchVolume: monthlyVol
+        monthlySearchVolume: monthlyVol,
       };
     });
   } catch (err) {
@@ -140,15 +148,13 @@ const __dirname = dirname(__filename);
 
 function runTest() {
   (async () => {
-    const sampleKeywords = [
-      '사당맛집', '이수역맛집', '동작구맛집'
-    ];
+    const sampleKeywords = ["이수역헬스장","이수역PT","사당동헬스장","사당동PT","동작구헬스장","동작구PT","이수역여성전용헬스장","사당여성전용헬스장","이수역피트니스","사당동피트니스","이수역여성전문피트니스","사당동여성전문피트니스","이수역코어운동","사당동코어운동","이수역헬스운동","사당동헬스운동","이수역운동복","사당동운동복","이수역PT추천","사당동PT추천","이수역여성전문PT","사당동여성전문PT","이수역프리미엄헬스장","사당동프리미엄헬스장"];
     console.log('[TEST] getSearchVolumes =>', sampleKeywords);
 
     const results = await getSearchVolumes(sampleKeywords);
     console.log('\n=== Final Result ===');
     results.forEach(r => {
-      console.log(`"${r.keyword}": volume=${r.monthlySearchVolume}`);
+      console.log(`${r.rank}등 | "${r.keyword}" => volume=${r.monthlySearchVolume}`);
     });
   })();
 }

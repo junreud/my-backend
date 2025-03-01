@@ -1,7 +1,7 @@
+// routes/authRoutes.js
 import express from 'express';
 import passport from 'passport';
 import authController from '../controllers/authController.js'; // 확장자 .js가 필요할 수 있음
-
 const router = express.Router();
 
 
@@ -132,4 +132,4 @@ router.post('/social-addinfo', authController.socialAddInfo);
 
 router.post('/signup', authController.signup);
 
-module.exports = router;
+export default router;

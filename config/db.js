@@ -1,6 +1,6 @@
 // config/db.js
 import 'dotenv/config';
-import { Sequelize } from 'sequelize/types';
+import { Sequelize } from 'sequelize';
 
 const sequelize = new Sequelize(
   process.env.DB_NAME,         // DB 이름
@@ -13,4 +13,4 @@ const sequelize = new Sequelize(
   }
 );
 
-module.exports = sequelize;
+export default sequelize;
