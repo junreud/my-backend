@@ -26,12 +26,12 @@ jobs:
       # 3) 백엔드 배포 (Express 예시)
       - name: Install & Build Backend
         run: |
-          cd backend
+          cd my-backend
           npm install
           # 필요하다면 npm run build (TS 컴파일 등)
       
       - name: Restart Backend Server
         run: |
-          cd backend
+          cd my-backend
           pm2 stop app || true
           pm2 start app.js  # 혹은 pm2 start 'npm run start'
