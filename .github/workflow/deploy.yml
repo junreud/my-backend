@@ -1,0 +1,33 @@
+name: Deploy to Mac Server - Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-job:
+    runs-on: self-hosted  # <-- 'self-hosted'를 지정해야 로컬 맥북 Runner에서 실행됨
+    steps:
+      # 1) 체크아웃(코드를 Runner 디렉토리에 받음)
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      # 2) Node 버전 지정 (선택)
+      - name: Use Node.js 23.7
+        uses: actions/setup-node@v3
+        with:
+          node-version: 23.7
+
+      # 3) 백엔드 배포 (Express 예시)
+      - name: Install & Build Backend
+        run: |
+          cd backend
+          npm install
+          # 필요하다면 npm run build (TS 컴파일 등)
+      
+      - name: Restart Backend Server
+        run: |
+          cd backend
+          pm2 stop app || true
+          pm2 start app.js  # 혹은 pm2 start 'npm run start'
