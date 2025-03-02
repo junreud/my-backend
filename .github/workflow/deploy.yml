@@ -24,20 +24,6 @@ jobs:
         run: |
           echo "${{ secrets.PRODUCTION_ENV }}" > .env
 
-      # [추가] 4) Homebrew로 MySQL 설치 (이미 되어 있다면 스킵 가능)
-      - name: Install MySQL (Homebrew)
-        run: |
-          brew update
-          brew install mysql || true
-
-      # [추가] 5) MySQL 서비스 시작
-      # launchctl, brew services 권한 이슈가 없다고 가정. 혹은 mysql.server start 사용 가능
-      - name: Start MySQL
-        run: |
-          brew services start mysql || true
-          # 또는:
-          # mysql.server start
-
       # 6) 설치 & 빌드 (Express, TS 등)
       - name: Install & Build Backend
         run: |
