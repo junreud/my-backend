@@ -7,13 +7,13 @@ on:
 
 jobs:
   deploy-job:
-    runs-on: self-hosted  # 로컬 맥북 Runner (self-hosted)에서 실행
+    runs-on: self-hosted  # 혹은: runs-on: ubuntu-latest
     steps:
       # 1) 저장소 체크아웃
       - name: Check out repository
         uses: actions/checkout@v3
 
-      # 2) Node 버전 지정 (선택)
+      # 2) Node 버전 지정 (필요 시)
       - name: Use Node.js 23.7
         uses: actions/setup-node@v3
         with:
@@ -24,17 +24,24 @@ jobs:
         run: |
           echo "${{ secrets.PRODUCTION_ENV }}" > .env
 
-      # 6) 설치 & 빌드 (Express, TS 등)
-      - name: Install & Build Backend
+      # 4) 설치 (Express, Sequelize, etc.)
+      - name: Install dependencies
         run: |
           npm install
-          # 만약 TypeScript라면 npm run build (tsc) 등
-          # npm run build
 
-      # 7) PM2로 서버 재시작
+      # 5) (선택) TypeScript 빌드 or 기타 빌드 스크립트
+      # - name: Build
+      #   run: |
+      #     npm run build
+
+      # 6) DB 마이그레이션 (Sequelize CLI)
+      - name: Run DB Migrations
+        run: |
+          npx sequelize-cli db:migrate --env production
+
+      # 7) PM2로 서버 재시작 (애플리케이션 실행)
       - name: Restart Backend Server
         run: |
           pm2 stop app || true
           pm2 start app.js
-          # 혹은: pm2 start 'npm run start'
-
+          # or pm2 start 'npm run start'

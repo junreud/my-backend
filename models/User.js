@@ -15,7 +15,7 @@ class User extends Model {
     provider = "local",
     provider_id = null,
     phone = null,
-    birthday6 = null,  // 새로 추가된 raw YYMMDD
+    date_of_birth = null,  // 새로 추가된 raw YYMMDD
     gender = null,     // 'male' or 'female'
     carrier = null,    // 통신사
     foreigner = false, // 기본값 false
@@ -34,7 +34,7 @@ class User extends Model {
       provider_id,
       name,
       phone,
-      birthday6,  // 저장
+      date_of_birth,  // 저장
       gender,
       carrier,
       foreigner,
@@ -151,26 +151,15 @@ User.init(
       type: DataTypes.STRING(20),
       allowNull: true,
     },
-    // (추가) birthday6 (YYMMDD 원본)
-    birthday6: {
-      type: DataTypes.STRING(6),
+    // (추가) date_of_birth (YYMMDD 원본)
+    date_of_birth: {
+      type: DataTypes.STRING(8),
       allowNull: true,
     },
     // 9) gender
     gender: {
       type: DataTypes.ENUM("male", "female"),
       allowNull: true,
-    },
-    // (추가) carrier (통신사)
-    carrier: {
-      type: DataTypes.STRING(50),
-      allowNull: true,
-    },
-    // (추가) foreigner (내/외국인 여부)
-    foreigner: {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: false,
     },
     // 10) role
     role: {
@@ -197,6 +186,17 @@ User.init(
     },
     // 14) is_completed
     is_completed: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    // (추가) carrier (통신사)
+    carrier: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+    // (추가) foreigner (내/외국인 여부)
+    foreigner: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false,

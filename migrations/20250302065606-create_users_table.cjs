@@ -217,78 +217,106 @@ module.exports = {
     });
 
     // 5) CREATE TABLE: users
-    await queryInterface.createTable('users', {
-      id: {
-        type: Sequelize.INTEGER,
-        allowNull: false,
-        autoIncrement: true,
-        primaryKey: true
-      },
-      email: {
-        type: Sequelize.STRING(255),
-        allowNull: false,
-      },
-      password: {
-        type: Sequelize.STRING(255),
-        allowNull: true,
-      },
-      provider: {
-        type: Sequelize.STRING(50),
-        allowNull: false,
-        defaultValue: 'local',
-      },
-      provider_id: {
-        type: Sequelize.STRING(255),
-        allowNull: true,
-      },
-      name: {
-        type: Sequelize.STRING(100),
-        allowNull: false,
-      },
-      phone: {
-        type: Sequelize.STRING(20),
-        allowNull: true,
-      },
-      date_of_birth: {
-        type: Sequelize.DATEONLY,
-        allowNull: true,
-      },
-      gender: {
-        type: Sequelize.ENUM('male','female','mail'), // from dump
-        allowNull: true,
-      },
-      role: {
-        type: Sequelize.ENUM('admin','user'),
-        allowNull: false,
-        defaultValue: 'user',
-      },
-      created_at: {
-        type: Sequelize.DATE,
-        allowNull: false,
-        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP'),
-      },
-      updated_at: {
-        type: Sequelize.DATE,
-        allowNull: false,
-        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP'),
-        onUpdate : Sequelize.literal('CURRENT_TIMESTAMP'),
-      },
-      refresh_token: {
-        type: Sequelize.STRING(255),
-        allowNull: true,
-      },
-      is_completed: {
-        type: Sequelize.TINYINT,
-        allowNull: false,
-        defaultValue: 0,
-      }
-    }, {
-      engine: 'InnoDB',
-      charset: 'utf8mb4',
-      collate: 'utf8mb4_0900_ai_ci',
-    });
+     await queryInterface.createTable("users", {
+        id: {
+          type: Sequelize.INTEGER,
+          allowNull: false,
+          autoIncrement: true,
+          primaryKey: true,
+        },
+        email: {
+          type: Sequelize.STRING(255),
+          allowNull: false,
+        },
+        password: {
+          type: Sequelize.STRING(255),
+          allowNull: true,
+        },
+        provider: {
+          type: Sequelize.STRING(50),
+          allowNull: false,
+          defaultValue: "local",
+        },
+        provider_id: {
+          type: Sequelize.STRING(255),
+          allowNull: true,
+        },
+        name: {
+          type: Sequelize.STRING(100),
+          allowNull: false,
+        },
+        phone: {
+          type: Sequelize.STRING(20),
+          allowNull: true,
+        },
 
-    // Unique Key
+        // date_of_birth: varchar(8)
+        date_of_birth: {
+          type: Sequelize.STRING(8),
+          allowNull: true,
+        },
+
+        // gender: enum('male','female','mail')
+        gender: {
+          type: Sequelize.ENUM("male", "female", "mail"),
+          allowNull: true,
+        },
+
+        // role: enum('admin','user') default 'user'
+        role: {
+          type: Sequelize.ENUM("admin", "user"),
+          allowNull: false,
+          defaultValue: "user",
+        },
+
+        // refresh_token
+        refresh_token: {
+          type: Sequelize.STRING(255),
+          allowNull: true,
+        },
+
+        // carrier
+        carrier: {
+          type: Sequelize.STRING(50),
+          allowNull: true,
+        },
+
+        // foreigner: TINYINT (0 or 1) default 0
+        foreigner: {
+          type: Sequelize.TINYINT,
+          allowNull: false,
+          defaultValue: 0,
+        },
+
+        // created_at: datetime, default CURRENT_TIMESTAMP
+        created_at: {
+          type: Sequelize.DATE,
+          allowNull: false,
+          defaultValue: Sequelize.literal("CURRENT_TIMESTAMP"),
+        },
+
+        // updated_at: datetime, default CURRENT_TIMESTAMP
+        updated_at: {
+          type: Sequelize.DATE,
+          allowNull: false,
+          defaultValue: Sequelize.literal("CURRENT_TIMESTAMP"),
+          // 일부 MySQL 버전/환경에서 onUpdate 설정을 적용하려면:
+          // onUpdate : Sequelize.literal('CURRENT_TIMESTAMP'),
+        },
+
+        // is_completed: TINYINT default 0
+        is_completed: {
+          type: Sequelize.TINYINT,
+          allowNull: false,
+          defaultValue: 0,
+        },
+      },
+      {
+        engine: "InnoDB",
+        charset: "utf8mb4",
+        collate: "utf8mb4_0900_ai_ci",
+      }
+    );   // Unique Key
     await queryInterface.addIndex('users', {
       name: 'uk_users_email',
       unique: true,
