@@ -1,4 +1,5 @@
 // config/db.js
+//brew services start mysql
 import 'dotenv/config';
 import { Sequelize } from 'sequelize';
 
