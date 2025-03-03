@@ -1,28 +1,16 @@
-// controllers/authController.js (ESM 방식)
+// controllers/authController.js (ESM)
 
-// (1) 라이브러리 import
+// 1) 라이브러리 import
 import jwt from 'jsonwebtoken';
-import 'dotenv/config';
-
-// (2) 로컬 모듈 import (필요시 .js 확장자)
+import 'dotenv/config'; // for process.env
 import User from '../models/User.js';
-import {
-  createIdentityVerification,
-  getIdentityVerification,
-  sendIdentityVerification,
-  confirmIdentityVerification,
-  resendIdentityVerification,
-} from '../services/portoneService.js';
-
-// (예) 추가 유틸 함수가 필요하다면 import하거나 직접 정의
-// import { computeIdentityNumber } from '../utils/identity.js';
-
-// (3) SMS 인증번호 저장소(메모리)
+import { createIdentityVerification } from '../services/portoneService.js';
+// SMS 인증용 저장(예시) 
 const smsStore = {};
 
-// ---------------------
-// JWT 생성 함수들
-// ---------------------
+// ------------------------------------------------------------
+// JWT 생성 함수
+// ------------------------------------------------------------
 function createAccessToken(userId) {
   return jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '15m' });
 }
@@ -31,41 +19,61 @@ function createRefreshToken(userId) {
   return jwt.sign({ userId }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '7d' });
 }
 
-// ---------------------
-// [1] 토큰 발급 로직
-// ---------------------
+/**
+ * expandBirth6to8
+ *   - "YYMMDD" 형태의 6글자를 "YYYYMMDD"로 변환
+ */
+function expandBirth6to8(shortBirth) {
+  if (!shortBirth || shortBirth.length !== 6) {
+    throw new Error('Invalid 6글자 생년월일 형식(YYMMDD)이어야 합니다.');
+  }
+
+  const YY = parseInt(shortBirth.slice(0, 2), 10);
+  const MMDD = shortBirth.slice(2); // "MMDD"
+
+  if (YY >= 35) {
+    // 예) 98xxxxx → 1998xxxx
+    return '19' + shortBirth;
+  } else if (YY <= 25) {
+    // 예) 03xxxxx → 2003xxxx
+    return '20' + shortBirth;
+  } else {
+    // 26~34 정도라면? (비즈니스 요구사항에 맞춰 결정)
+    // 여기서는 일단 19로 처리
+    return '19' + shortBirth;
+  }
+}
+
+// ------------------------------------------------------------
+// [1] Tokens Issue
+// ------------------------------------------------------------
 export function issueTokens(userId) {
   const accessToken = createAccessToken(userId);
   const refreshToken = createRefreshToken(userId);
-
-  // DB에 refreshToken 저장 (비동기로 처리)
+  // DB에 refreshToken 저장
   User.saveRefreshToken(userId, refreshToken).catch(console.error);
-
   return { accessToken, refreshToken };
 }
 
-// ---------------------
-// [2] Refresh Token 검증 & 새 Access Token 발급
-// ---------------------
+// ------------------------------------------------------------
+// [2] Refresh Token
+// ------------------------------------------------------------
 export async function refresh(req, res) {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken) {
       return res.status(400).json({ message: 'No refresh token' });
     }
-
     const user = await User.findByRefreshToken(refreshToken);
     if (!user) {
       return res.status(401).json({ message: 'Invalid refresh token' });
     }
-
     let payload;
     try {
       payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
     } catch (err) {
       return res.status(401).json({ message: 'Refresh token expired or invalid' });
     }
-
     const newAccessToken = createAccessToken(user.id);
     return res.json({ accessToken: newAccessToken });
   } catch (err) {
@@ -74,41 +82,47 @@ export async function refresh(req, res) {
   }
 }
 
-// ---------------------
+// ------------------------------------------------------------
 // [3] 소셜 로그인 후 추가 정보 입력
-// ---------------------
+// ------------------------------------------------------------
 export async function socialAddInfo(req, res) {
   try {
+    // 1) 필요한 필드를 구조 분해 할당
+    //    (만약 birthday6를 소셜 추가정보에서도 받는다 치면, 아래처럼 추가)
     const {
       email,
       name,
-      birthday6,
       phone,
-      carrier,
+      operator,
       gender,
       foreigner,
-      // (예) 약관 동의 여부들...
+      birthday6,       // 소셜 가입 시에도 6자리로 받는 경우
     } = req.body;
 
+    // 2) DB에서 해당 소셜 유저 찾기
     const user = await User.findOne({
-      where: { email, provider: 'google' }, // 예) 구글 소셜 가입자 찾기
+      where: { email, provider: 'google' },
     });
     if (!user) {
       return res.status(404).json({ message: '해당 소셜 유저를 찾을 수 없음' });
     }
 
-    // 추가정보 업데이트
+    // 3) 생년월일 변환
+    //    (실제로 6자리를 받아서 변환하고 싶으면 아래와 같이 사용)
+    let dateOfBirth = user.date_of_birth; // 기존 값
+    if (birthday6) {
+      dateOfBirth = expandBirth6to8(birthday6);
+    }
+
+    // 4) 업데이트
     user.name = name;
-    user.birthday6 = birthday6;
+    user.date_of_birth = dateOfBirth; // DB 컬럼은 date_of_birth
     user.phone = phone;
-    user.carrier = carrier;
+    user.carrier = operator;
     user.gender = gender;
     user.foreigner = foreigner;
     user.is_completed = true;
-    // user.agreePersonalInfo,
-    // user.agreeUniqueID,
-    // ... (실제 모델 칼럼에 맞춰 업데이트)
-
+    
     await user.save();
 
     return res.json({ message: '소셜 추가정보 등록 완료', user });
@@ -118,35 +132,44 @@ export async function socialAddInfo(req, res) {
   }
 }
 
-// ---------------------
+// ------------------------------------------------------------
 // [A] SMS 코드 발송 (PortOne 본인인증 예시)
-// ---------------------
+// ------------------------------------------------------------
 export async function sendSmsCode(req, res) {
   try {
+    // 이 부분에서 birthday6(YYMMDD)로 받는다면 필드 이름을 맞춰주세요.
+    // 또한 아래 로직과 맞추기 위해서는 'birth' 대신 'birthday6'를 쓰든지,
+    // 혹은 expandBirth6to8 -> 'birth' 변환을 하든지 통일이 필요.
     const {
       name,
-      birth,       // "YYYYMMDD"
-      phone,       // "01012345678"
-      carrier,     // "SKT", "KT", "LGU" 등
+      birthday6,   // "YYMMDD"
+      phone,
+      operator,
       gender,      // "male" / "female"
       foreigner,   // boolean
     } = req.body;
 
-    if (!name || !birth || !phone || !carrier || !gender) {
+    // 유효성 검사
+    if (!name || !birthday6 || !phone || !operator || !gender) {
       return res.status(400).json({ message: '필수 정보가 누락되었습니다.' });
     }
 
     // (1) PortOne: 본인인증 객체 생성
+    //    실제로 PortOne에서 요구하는 birth 형식이 "YYYYMMDD"라면,
+    //    아래처럼 6자리를 8자리로 변환해 준다.
+    const expandedBirth = expandBirth6to8(birthday6);
+
     const createPayload = {
       requestedCustomer: {
         name,
         phoneNumber: phone,
-        birth,
+        birth: expandedBirth, // PortOne에서 필요한 필드명
         gender,
         isForeigner: foreigner,
       },
     };
 
+    // 실제로 아래 함수는 본인인증 API를 호출하는 로직이라고 가정
     const createResult = await createIdentityVerification(createPayload);
     const verificationId = createResult.id || createResult.response?.id;
     if (!verificationId) {
@@ -160,11 +183,10 @@ export async function sendSmsCode(req, res) {
       customer: {
         name,
         phoneNumber: phone,
-        // (예) computeIdentityNumber(birth, gender)가 필요하다면 정의/불러오기
-        identityNumber: birth.slice(2), // 예시로 임의 처리
+        identityNumber: expandedBirth.slice(2), // 예: "980907" 처럼 YYMMDD만 쓰는 경우
         ipAddress: req.ip || '',
       },
-      operator: carrier,
+      operator,
       method: 'SMS',
     };
 
@@ -187,57 +209,59 @@ export async function sendSmsCode(req, res) {
   }
 }
 
-// ---------------------
-// [B] 회원가입
-// ---------------------
-export async function signup(req, res) {
+// ------------------------------------------------------------
+// [5] 회원가입 (Local Signup)
+// ------------------------------------------------------------
+export async function verifyAndSignup(req, res) {
   try {
     const {
       email,
       password,
       name,
-      birthday6,
+      birthday6,    // 6글자 ex) "980907"
       phone,
-      carrier,
-      gender,         // "male" / "female"
+      operator,
+      gender,
       foreigner,
-      verificationId, // 문자 인증용
+      verificationId,
     } = req.body;
 
-    // 1) smsStore에서 phone 기록 조회
+    // 1) 문자 인증 로직
     const record = smsStore[phone];
     if (!record) {
       return res.status(400).json({ message: 'No SMS record found' });
     }
-
     if (Date.now() > record.expire) {
       return res.status(400).json({ message: 'SMS verification expired' });
     }
-
     if (record.verificationId !== verificationId) {
       return res.status(400).json({ message: 'INVALID_CODE' });
     }
 
-    // gender 변환
+    // 2) gender 정규화
     let normalizedGender = null;
     if (gender && typeof gender === 'string') {
       const lower = gender.toLowerCase();
-      if (lower === 'male' || lower === 'female') {
+      if (lower === 'MALE' || lower === 'FEMALE') {
         normalizedGender = lower;
       }
     }
 
-    // DB 가입 처리
+    // 3) 6글자 -> 8글자로 변환
+    const date_of_birth = expandBirth6to8(birthday6);
+
+    // 4) DB 가입
     const newUser = await User.createUser({
       email,
-      password, // 해싱은 createUser 내부에서 처리
+      password,
       name,
+      date_of_birth,   // DB 컬럼명은 date_of_birth
       phone,
-      birthday6,
-      carrier,
-      foreigner,
+      carrier: operator,
       gender: normalizedGender,
+      foreigner,
       provider: 'local',
+      provider_id: null,
       role: 'user',
       is_completed: true,
     });
@@ -248,6 +272,7 @@ export async function signup(req, res) {
         id: newUser.id,
         email: newUser.email,
         name: newUser.name,
+        date_of_birth: newUser.date_of_birth,
       },
     });
   } catch (error) {
@@ -256,9 +281,9 @@ export async function signup(req, res) {
   }
 }
 
-// ---------------------
-// [C] 이메일 중복 체크
-// ---------------------
+// ------------------------------------------------------------
+// [6] 이메일 중복 체크
+// ------------------------------------------------------------
 export async function checkEmail(req, res) {
   try {
     const { email } = req.body;
@@ -267,7 +292,6 @@ export async function checkEmail(req, res) {
     }
 
     const available = await User.checkEmailAvailability(email);
-    // available === true/false
     return res.json({ available });
   } catch (err) {
     console.error(err);
@@ -275,10 +299,13 @@ export async function checkEmail(req, res) {
   }
 }
 
+// ------------------------------------------------------------
+// Export default
+// ------------------------------------------------------------
 export default {
   refresh,
   socialAddInfo,
   sendSmsCode,
-  signup,
+  verifyAndSignup,
   checkEmail,
 };

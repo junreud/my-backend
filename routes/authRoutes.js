@@ -130,6 +130,6 @@ router.post('/check-email', authController.checkEmail);
 router.post('/social-addinfo', authController.socialAddInfo);
 
 
-router.post('/signup', authController.signup);
+router.post('/verify-and-signup', authController.verifyAndSignup);
 
 export default router;

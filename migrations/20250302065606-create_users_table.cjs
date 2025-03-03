@@ -256,9 +256,9 @@ module.exports = {
           allowNull: true,
         },
 
-        // gender: enum('male','female','mail')
+        // gender: enum('male','female')
         gender: {
-          type: Sequelize.ENUM("male", "female", "mail"),
+          type: Sequelize.ENUM("MALE", "FEMALE",),
           allowNull: true,
         },
 

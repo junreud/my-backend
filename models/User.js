@@ -158,7 +158,7 @@ User.init(
     },
     // 9) gender
     gender: {
-      type: DataTypes.ENUM("male", "female"),
+      type: DataTypes.ENUM("MALE", "FEMALE"),
       allowNull: true,
     },
     // 10) role
