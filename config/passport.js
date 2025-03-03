@@ -43,12 +43,12 @@ passport.use(
     {
       // request의 Header "Authorization: Bearer <token>"에서 토큰 추출
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      secretOrKey: process.env.ACCESS_TOKEN_SECRET
+      secretOrKey: process.env.ACCESS_TOKEN_SECRET, // .env에 저장된 키
     },
     async (payload, done) => {
       try {
         // payload = { userId: XXX, iat: ..., exp: ... }
-        const user = await User.findById(payload.userId);
+        const user = await User.findByPk(payload.userId);
         if (!user) {
           return done(null, false, { message: '유효하지 않은 토큰' });
         }

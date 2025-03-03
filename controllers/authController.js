@@ -5,19 +5,9 @@ import jwt from 'jsonwebtoken';
 import 'dotenv/config'; // for process.env
 import User from '../models/User.js';
 import { createIdentityVerification } from '../services/portoneService.js';
+
 // SMS 인증용 저장(예시) 
 const smsStore = {};
-
-// ------------------------------------------------------------
-// JWT 생성 함수
-// ------------------------------------------------------------
-function createAccessToken(userId) {
-  return jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '15m' });
-}
-
-function createRefreshToken(userId) {
-  return jwt.sign({ userId }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '7d' });
-}
 
 /**
  * expandBirth6to8
@@ -45,18 +35,33 @@ function expandBirth6to8(shortBirth) {
 }
 
 // ------------------------------------------------------------
-// [1] Tokens Issue
+// 토큰 생성 함수
 // ------------------------------------------------------------
-export function issueTokens(userId) {
+function createAccessToken(userId) {
+  // 15분 만료 예시
+  return jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '15m' });
+}
+
+function createRefreshToken(userId) {
+  // 7일 만료 예시
+  return jwt.sign({ userId }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: '7d' });
+}
+
+// ------------------------------------------------------------
+// [1] Tokens 발급
+// ------------------------------------------------------------
+export async function issueTokens(userId) {
   const accessToken = createAccessToken(userId);
   const refreshToken = createRefreshToken(userId);
+
   // DB에 refreshToken 저장
-  User.saveRefreshToken(userId, refreshToken).catch(console.error);
+  await User.saveRefreshToken(userId, refreshToken);
+
   return { accessToken, refreshToken };
 }
 
 // ------------------------------------------------------------
-// [2] Refresh Token
+// [2] Refresh 요청
 // ------------------------------------------------------------
 export async function refresh(req, res) {
   try {
@@ -64,16 +69,20 @@ export async function refresh(req, res) {
     if (!refreshToken) {
       return res.status(400).json({ message: 'No refresh token' });
     }
+
     const user = await User.findByRefreshToken(refreshToken);
     if (!user) {
       return res.status(401).json({ message: 'Invalid refresh token' });
     }
-    let payload;
+
+    // 토큰 유효성 검사
     try {
-      payload = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+      jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
     } catch (err) {
       return res.status(401).json({ message: 'Refresh token expired or invalid' });
     }
+
+    // Access Token 재발급
     const newAccessToken = createAccessToken(user.id);
     return res.json({ accessToken: newAccessToken });
   } catch (err) {
@@ -96,12 +105,14 @@ export async function socialAddInfo(req, res) {
       operator,
       gender,
       foreigner,
-      birthday6,       // 소셜 가입 시에도 6자리로 받는 경우
+      birthday6,
+      provider,
+      agreeMarketingTerm,       // 소셜 가입 시에도 6자리로 받는 경우
     } = req.body;
 
     // 2) DB에서 해당 소셜 유저 찾기
     const user = await User.findOne({
-      where: { email, provider: 'google' },
+      where: { email, provider },
     });
     if (!user) {
       return res.status(404).json({ message: '해당 소셜 유저를 찾을 수 없음' });
@@ -122,7 +133,7 @@ export async function socialAddInfo(req, res) {
     user.gender = gender;
     user.foreigner = foreigner;
     user.is_completed = true;
-    
+    user.agreeMarketingTerm = agreeMarketingTerm;
     await user.save();
 
     return res.json({ message: '소셜 추가정보 등록 완료', user });
@@ -264,6 +275,7 @@ export async function verifyAndSignup(req, res) {
       provider_id: null,
       role: 'user',
       is_completed: true,
+
     });
 
     return res.json({

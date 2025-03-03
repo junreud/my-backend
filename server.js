@@ -4,7 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import sequelize from './config/db.js';
 import passport from './config/passport.js';
-
+import morgan from 'morgan';
 import authRoutes from './routes/authRoutes.js';
 import keywordRoutes from './routes/keywordRoutes.js';
 
@@ -15,8 +15,7 @@ app.use((req, res, next) => {
   console.log('[DEBUG] Incoming request:', req.method, req.url);
   next();
 });
-
-
+app.use(morgan('dev'));
 app.use(cors(
   {
     origin: 'http://localhost:3000',

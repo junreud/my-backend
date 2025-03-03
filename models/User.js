@@ -144,7 +144,7 @@ User.init(
     // 6) name
     name: {
       type: DataTypes.STRING(100),
-      allowNull: false,
+      allowNull: true,
     },
     // 7) phone
     phone: {
@@ -200,6 +200,11 @@ User.init(
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false,
+    },
+    agree_marketing_term: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
     },
   },
   {

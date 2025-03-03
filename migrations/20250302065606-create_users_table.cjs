@@ -1,3 +1,6 @@
+//npx sequelize db:migrate
+
+
 'use strict';
 
 /**
@@ -306,6 +309,11 @@ module.exports = {
 
         // is_completed: TINYINT default 0
         is_completed: {
+          type: Sequelize.TINYINT,
+          allowNull: false,
+          defaultValue: 0,
+        },
+        agree_marketing_term: {
           type: Sequelize.TINYINT,
           allowNull: false,
           defaultValue: 0,
