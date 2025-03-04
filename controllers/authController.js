@@ -1,6 +1,5 @@
 // controllers/authController.js (ESM)
 
-// 1) 라이브러리 import
 import jwt from 'jsonwebtoken';
 import 'dotenv/config'; // for process.env
 import User from '../models/User.js';
@@ -110,6 +109,8 @@ export async function socialAddInfo(req, res) {
       agreeMarketingTerm,       // 소셜 가입 시에도 6자리로 받는 경우
     } = req.body;
 
+    console.log('[DEBUG] socialAddInfo - req.body =', req.body);
+
     // 2) DB에서 해당 소셜 유저 찾기
     const user = await User.findOne({
       where: { email, provider },
@@ -133,7 +134,7 @@ export async function socialAddInfo(req, res) {
     user.gender = gender;
     user.foreigner = foreigner;
     user.is_completed = true;
-    user.agreeMarketingTerm = agreeMarketingTerm;
+    user.agreeMarketingTerm = 1;
     await user.save();
 
     return res.json({ message: '소셜 추가정보 등록 완료', user });

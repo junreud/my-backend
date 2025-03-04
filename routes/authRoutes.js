@@ -26,19 +26,6 @@ router.post('/login',
   })(req, res, next);
 });
 
-// ----- 보호 라우트 예시: /me -----
-router.get('/me',
-  passport.authenticate('jwt', { session: false }),
-  (req, res) => {
-    // passport-jwt 전략 성공 시 req.user에 user 객체가 들어감
-    const user = req.user;
-    res.json({ 
-      message: '유저 정보 조회 성공',
-      user: { id: user.id, email: user.email } 
-    });
-  }
-);
-
 // ----- 구글 OAuth -----
 router.get('/google',
   passport.authenticate('google', { scope: ['email', 'profile'] })
@@ -59,9 +46,7 @@ router.get('/google/callback',
             // 이제 /link-accounts 페이지로 리다이렉트하여
             // 로컬 비밀번호 입력받고, 계정 연결
             return res.redirect(
-              `http://localhost:3000/link-accounts?email=${encodeURIComponent(
-                email
-              )}&googleSub=${encodeURIComponent(googleId)}`
+              `http://localhost:3000/link-accounts?email=${encodeURIComponent(email)}&googleSub=${encodeURIComponent(googleId)}&provider=google`
             );
           } else {
             // 그 외 일반적인 오류
@@ -76,16 +61,14 @@ router.get('/google/callback',
         if (!user.is_completed) {
           // 추가정보 필요시
           return res.redirect(
-            `https://lakabe.com/add-info?email=${encodeURIComponent(
-              user.email
-            )}`
+            `http://localhost:3000/add-info?email=${encodeURIComponent(user.email)}&provider=google`
           );
         } else {
           // 이미 가입 완료 → 토큰 발급 후 /dashboard
           // (예시) authController.issueTokens
           const tokens = authController.issueTokens(user.id);
           return res.redirect(
-            `https://lakabe.com/dashboard?accessToken=${tokens.accessToken}`
+            `http://localhost:3000/dashboard?accessToken=${tokens.accessToken}`
           );
         }
       })(req, res, next);
@@ -114,7 +97,7 @@ router.get('/kakao/callback',
           const { email, kakaoId } = info;
           // /link-accounts 페이지 등으로 이동 → 계정 연동 로직
           return res.redirect(
-            `http://localhost:3000/link-accounts?email=${encodeURIComponent(email)}&kakaoId=${encodeURIComponent(kakaoId)}`
+            `http://localhost:3000/link-accounts?email=${encodeURIComponent(email)}&kakaoId=${encodeURIComponent(kakaoId)}&provider=kakao`
           );
         } else {
           // 그 외 일반적인 오류
@@ -130,7 +113,7 @@ router.get('/kakao/callback',
       if (!user.is_completed) {
         // 추가 정보가 필요한 경우(예: 닉네임, 성별, 지역 등)
         return res.redirect(
-          `http://localhost:3000/add-info?email=${encodeURIComponent(user.email)}`
+          `http://localhost:3000/add-info?email=${encodeURIComponent(user.email)}&provider=kakao`
         );
       } else {
         // 이미 가입/연동이 완료된 유저라면 → 토큰 발급 후 리다이렉트
@@ -140,6 +123,8 @@ router.get('/kakao/callback',
         );
       }
     })(req, res, next);
+
+
   }
 );
 

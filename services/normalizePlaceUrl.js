@@ -36,7 +36,7 @@ export async function normalizePlaceUrl(inputUrl) {
   }
   
   // "place/{placeId}" 형태의 플레이스 ID 추출
-  const match = resolvedUrl.match(/place\/(\d+)/);
+  const match = resolvedUrl.match(/\/(\d+)(?:\/|$)/);
   if (!match) {
     console.error('[ERROR] URL에서 Place ID를 추출하지 못했습니다.');
     return null;
