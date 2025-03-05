@@ -1,9 +1,7 @@
-console.log('=== Start server.js ===');
-
 import express from 'express';
 import cors from 'cors';
 import sequelize from './config/db.js';
-import passport from './config/passport.js';
+import passport from './middlewares/passport.js';
 import morgan from 'morgan';
 import authRoutes from './routes/authRoutes.js';
 import keywordRoutes from './routes/keywordRoutes.js';

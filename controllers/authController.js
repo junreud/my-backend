@@ -4,6 +4,10 @@ import jwt from 'jsonwebtoken';
 import 'dotenv/config'; // for process.env
 import User from '../models/User.js';
 import { createIdentityVerification } from '../services/portoneService.js';
+import pkg from 'coolsms-node-sdk'
+const coolsms = pkg.default
+
+// TODO: coolsms 모듈을 사용하여 문자 메시지 전송 마무리
 
 // SMS 인증용 저장(예시) 
 const smsStore = {};
@@ -235,7 +239,7 @@ export async function verifyAndSignup(req, res) {
       operator,
       gender,
       foreigner,
-      verificationId,
+      code,
     } = req.body;
 
     // 1) 문자 인증 로직
@@ -246,7 +250,7 @@ export async function verifyAndSignup(req, res) {
     if (Date.now() > record.expire) {
       return res.status(400).json({ message: 'SMS verification expired' });
     }
-    if (record.verificationId !== verificationId) {
+    if (record.code !== code) {
       return res.status(400).json({ message: 'INVALID_CODE' });
     }
 
@@ -294,6 +298,134 @@ export async function verifyAndSignup(req, res) {
   }
 }
 
+
+
+// ------------------------------------------------------------
+// COOLSMS SMS 전송
+// ------------------------------------------------------------
+export async function sendPhoneAuth(req, res) {
+  try {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) {
+      return res.status(400).json({ success: false, message: '전화번호가 없습니다.' });
+    }
+
+    // 인증번호(6자리) 생성
+    const authCode = ('000000' + Math.floor(Math.random() * 999999)).slice(-6);
+
+    // SMS 전송
+    const result = await messageService.send({
+      text: `[MyApp] 인증번호 [${authCode}]를 입력해주세요.`,
+      to: phoneNumber.replace(/[^0-9]/g, ''), // 숫자만 추출
+      from: process.env.SEND_PHONE_NUMBER // 등록된 발신번호
+      // type: 'SMS'
+    });
+
+    console.log('CoolSMS send result:', result);
+
+    // phoneAuthStore에 저장 (만료시간 포함)
+    phoneAuthStore.set(phoneNumber, {
+      code: authCode,
+      expireAt: Date.now() + 3 * 60 * 1000 // 3분 뒤 만료
+    });
+
+    return res.json({ success: true, message: '인증번호가 전송되었습니다.' });
+  } catch (err) {
+    console.error('SMS 전송 오류', err);
+    return res.status(500).json({ success: false, message: 'SMS 전송 실패' });
+  }
+}
+
+// ------------------------------------------------------------
+// COOLSMS 문자 인증번호 검증 및 회원가입
+// ------------------------------------------------------------
+export async function verifyPhoneAuth(req, res) {
+  try {
+    const {
+      email,
+      password,
+      name,
+      birthday6,  // "980907" 형태 6자리
+      phone,      // "01012345678" (하이픈 제거)
+      operator,
+      gender,
+      foreigner,
+      code,       // 인증번호
+      agreeMarketingTerm
+    } = req.body;
+
+    // ─────────────────────────────────────
+    // 1) 문자 인증 로직
+    // ─────────────────────────────────────
+    const record = phoneAuthStore.get(phone); 
+    // (과거에 '/phone/send'에서 phoneAuthStore.set(phone, { code, expireAt }) 했다고 가정)
+
+    if (!record) {
+      return res.status(400).json({ message: '발송 이력이 없거나 만료되었습니다.' });
+    }
+
+    if (Date.now() > record.expireAt) {
+      return res.status(400).json({ message: '인증번호가 만료되었습니다. 다시 시도해주세요.' });
+    }
+
+    if (record.code !== code) {
+      return res.status(400).json({ message: 'INVALID_CODE' });
+    }
+
+    // 인증 성공 후 -> 인증 정보 삭제(재사용 방지)
+    phoneAuthStore.delete(phone);
+
+    // ─────────────────────────────────────
+    // 2) gender 정규화
+    // ─────────────────────────────────────
+    let normalizedGender = null;
+    if (gender && typeof gender === 'string') {
+      const upper = gender.toUpperCase();
+      if (upper === 'MALE' || upper === 'FEMALE') {
+        normalizedGender = upper;
+      }
+    }
+
+    // ─────────────────────────────────────
+    // 3) 생년월일(6자리 -> 8자리)
+    // ─────────────────────────────────────
+    const date_of_birth = expandBirth6to8(birthday6);
+    // 예: "980907" -> "19980907" (구현 로직은 utils/dateUtils.js 내 expandBirth6to8 함수)
+
+    // ─────────────────────────────────────
+    // 4) DB 가입 (User 모델 등)
+    // ─────────────────────────────────────
+    const newUser = await User.createUser({
+      email,
+      password,
+      name,
+      date_of_birth,  // DB 컬럼명
+      phone,
+      carrier: operator,
+      gender: normalizedGender,
+      foreigner,
+      provider: 'local',
+      provider_id: null,
+      role: 'user',
+      is_completed: true,
+      agreeMarketingTerm,
+    });
+
+    return res.json({
+      message: '가입 성공',
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name,
+        date_of_birth: newUser.date_of_birth,
+      },
+    });
+  } catch (error) {
+    console.error('signup error:', error);
+    return res.status(500).json({ message: '서버 오류' });
+  }
+}
+
 // ------------------------------------------------------------
 // [6] 이메일 중복 체크
 // ------------------------------------------------------------
@@ -321,4 +453,8 @@ export default {
   sendSmsCode,
   verifyAndSignup,
   checkEmail,
+  issueTokens,
+  sendPhoneAuth,
+  verifyPhoneAuth,
+
 };

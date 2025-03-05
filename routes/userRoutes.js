@@ -1,11 +1,11 @@
 // routes/userRoutes.js
 import express from 'express';
 import User from '../models/User.js';
-import { authenticate } from '../middlewares/auth.js';
 import { getUserById } from '../db/userService.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
 // (GET) /users/role-check
 // 현재 로그인한 사용자의 role 반환
 router.get('/role-check', authenticate, async (req, res) => {
@@ -74,4 +74,6 @@ router.get("/me", authMiddleware, async (req, res) => {
     return res.status(500).json({ message: "Internal server error" });
   }
 });
+
+
 export default router;

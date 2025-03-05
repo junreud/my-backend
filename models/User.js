@@ -106,6 +106,22 @@ class User extends Model {
     const existing = await User.findOne({ where: { email } });
     return existing ? false : true;
   }
+
+  /**
+   * (9) updateUrlRegistration
+   * url_registration 컬럼을 1로 업데이트
+   */
+  static async updateUrlRegistration(userId) {
+    try {
+      const user = await User.findByPk(userId);
+      if (user) {
+        user.url_registration = 1;
+        await user.save();
+      }
+    } catch (err) {
+      console.error('[ERROR] updateUrlRegistration:', err);
+    }
+  }
 }
 
 // ----------------------

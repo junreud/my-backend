@@ -28,15 +28,15 @@ async function resolveShortUrl(url) {
  */
 export async function normalizePlaceUrl(inputUrl) {
   let resolvedUrl = inputUrl;
-  // 축소형 URL 여부 확인
+  // 축소형 URL 여부 확인 
   if (inputUrl.includes('naver.me/')) {
     console.log('[INFO] 축소형 URL 감지. 해제 중...');
     resolvedUrl = await resolveShortUrl(inputUrl);
     console.log('[INFO] 해제된 URL:', resolvedUrl);
   }
   
-  // "place/{placeId}" 형태의 플레이스 ID 추출
-  const match = resolvedUrl.match(/\/(\d+)(?:\/|$)/);
+  // "place/{placeId}" 또는 "place/{placeId}?placePath" 형태의 플레이스 ID 추출
+  const match = resolvedUrl.match(/(?:place\/|\/)(\d+)(?:\/|$|\?)/);
   if (!match) {
     console.error('[ERROR] URL에서 Place ID를 추출하지 못했습니다.');
     return null;

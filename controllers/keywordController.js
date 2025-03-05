@@ -4,6 +4,7 @@ import { analyzePlaceWithChatGPT } from '../services/chatGPTService.js';
 import { getSearchVolumes } from '../services/naverAdApiService.js';
 import { groupKeywordsByNaverTop10 } from '../services/keywordGrounpingService.js';
 import { crawlPlaceAndFindMyRanking } from '../services/crawlerService.js';
+import User from '../models/User.js';
 
 // controllers/keywordController.js (예시)
 export async function normalizeUrlHandler(req, res) {
@@ -34,7 +35,6 @@ export async function normalizeUrlHandler(req, res) {
     });
   }
 }
-
 
 export async function crawlAndAnalyzeHandler(req, res) {
   try {
@@ -76,10 +76,13 @@ export async function crawlAndAnalyzeHandler(req, res) {
     console.log('[INFO] 검색량 조회 결과 =', JSON.stringify(externalDataList, null, 2));
 
     // 응답
-    return res.json({
+    res.json({
       success: true,
       externalDataList,
     });
+
+    // Update url_registration to 1
+    await User.updateUrlRegistration(req.user.id);
   } catch (err) {
     console.error('[ERROR] crawlAndAnalyzeHandler:', err);
     return res.status(500).json({
@@ -202,5 +205,6 @@ export default {
   normalizeUrlHandler,
   crawlAndAnalyzeHandler,
   groupKeywordsHandler, 
-  getRankingData 
+  getRankingData,
+  
 };
