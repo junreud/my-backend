@@ -4,6 +4,8 @@ import express from 'express';
 import passport from 'passport';
 import authController from '../controllers/authController.js'; // default import
 import { issueTokens } from '../controllers/authController.js';
+import { sendVerificationCode } from '../services/emailService.js';
+import { redisClient } from '../config/redisClient.js';
 
 const router = express.Router();
 
@@ -129,8 +131,70 @@ router.get('/kakao/callback', (req, res, next) => {
     }
   })(req, res, next);
 });
-// ----- 기타 라우트 예시 -----
 
+
+// 1) 회원가입 시도 -> 이메일로 인증코드 발송
+router.post('/signup', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ message: '이메일/비밀번호가 필요합니다.' });
+  }
+
+  // (비밀번호 검증/중복체크 등은 생략)
+
+  // 6자리 인증코드 생성
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  // TTL(초 단위), 예: 5분 -> 300초
+  const ttlSeconds = 300;
+
+  try {
+    // 1) Redis에 code 저장: key 예시: "verifyCode:이메일"
+    //    'EX' 300 => 300초 뒤 자동 만료
+    await redisClient.setEx(`verifyCode:${email}`, ttlSeconds, code);
+
+    // 2) AWS SES로 이메일 발송
+    await sendVerificationCode(email, code);
+
+    return res.json({ message: '인증코드가 이메일로 발송되었습니다.' });
+  } catch (err) {
+    console.error('Redis/Email Error:', err);
+    return res.status(500).json({ message: '서버 에러, 인증코드 발송 실패' });
+  }
+});
+
+// 2) 인증코드 검증
+router.post('/verify', async (req, res) => {
+  const { email, code } = req.body;
+  if (!email || !code) {
+    return res.status(400).json({ message: '이메일/인증코드가 필요합니다.' });
+  }
+
+  try {
+    // Redis에서 저장된 코드 조회
+    const storedCode = await redisClient.get(`verifyCode:${email}`);
+    if (!storedCode) {
+      return res.status(400).json({ message: '인증코드가 만료되었거나 발급되지 않았습니다.' });
+    }
+
+    // 코드가 일치하는지 확인
+    if (storedCode !== code) {
+      return res.status(400).json({ message: '인증코드가 일치하지 않습니다.' });
+    }
+
+    // 여기까지 오면 인증 성공
+    // DB에 사용자 정보 저장(회원가입 완료) 등을 진행할 수 있음
+    // 인증코드 사용 후 삭제(1회용)
+    await redisClient.del(`verifyCode:${email}`);
+
+    return res.json({ message: '인증 성공!', redirectUrl: '/add-info' });
+  } catch (err) {
+    console.error('Redis GET Error:', err);
+    return res.status(500).json({ message: '서버 에러' });
+  }
+});
+
+
+// ----- 기타 라우트 예시 -----
 router.post('/check-email', authController.checkEmail);
 router.post('/social-addinfo', authController.socialAddInfo);
 
@@ -142,6 +206,5 @@ router.post('/send-sms-code', authController.sendSmsCode);
 router.post('/phone/send', authController.sendPhoneAuth);
 // 전화번호 인증번호 검증
 router.post('/phone/verify', authController.verifyPhoneAuth);
-
 
 export default router;

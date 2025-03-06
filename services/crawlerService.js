@@ -2,7 +2,6 @@
 import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { MOBILE_USER_AGENT, PROXY_SERVER } from '../config/crawler.js';
 import dotenv from 'dotenv';
 

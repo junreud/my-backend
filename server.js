@@ -5,6 +5,7 @@ import passport from './middlewares/passport.js';
 import morgan from 'morgan';
 import authRoutes from './routes/authRoutes.js';
 import keywordRoutes from './routes/keywordRoutes.js';
+import { connectRedis } from './config/redisClient.js';
 
 const app = express();
 
@@ -23,9 +24,12 @@ app.use(cors(
 app.use(express.json());
 app.use(passport.initialize());
 
+
 // 라우트
 app.use('/auth', authRoutes);
 app.use('/keyword', keywordRoutes);
+
+await connectRedis();
 
 // DB 연결 + 서버 구동
 sequelize.sync().then(() => {

@@ -1,7 +1,6 @@
 // routes/userRoutes.js
 import express from 'express';
 import User from '../models/User.js';
-import { getUserById } from '../db/userService.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -54,26 +53,5 @@ router.get('/role-check', authenticate, async (req, res) => {
     });
   }
 });
-
-router.get("/me", authMiddleware, async (req, res) => {
-  try {
-    // authMiddleware를 통과했으므로 req.user에 정보가 들어있음
-    const userId = req.user.id; // 보통 토큰 payload에 { id, email } 형태로 있음
-    const user = await getUserById(userId);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // 필요에 따라 비밀번호 등 민감 정보를 제외하고 응답
-    // eslint-disable-next-line no-unused-vars
-    const { password, ...safeUser } = user;
-    return res.json(safeUser);
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ message: "Internal server error" });
-  }
-});
-
 
 export default router;
