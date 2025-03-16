@@ -1,38 +1,58 @@
-import express from 'express';
-import cors from 'cors';
-import sequelize from './config/db.js';
-import passport from './middlewares/passport.js';
-import morgan from 'morgan';
-import authRoutes from './routes/authRoutes.js';
-import keywordRoutes from './routes/keywordRoutes.js';
-import { connectRedis } from './config/redisClient.js';
+import fs from "fs"
+import https from "https"
+import express from "express"
+import cors from "cors"
+import sequelize from "./config/db.js"
+import passport from "./middlewares/passport.js"
+import morgan from "morgan"
+import cookieParser from "cookie-parser"
 
-const app = express();
+import authRoutes from "./routes/authRoutes.js"
+import keywordRoutes from "./routes/keywordRoutes.js"
+import userRoutes from "./routes/userRoutes.js"
+import { connectRedis } from "./config/redisClient.js"
 
-// 전역 미들웨어로 모든 요청 로깅
+// (1) HTTPS 인증서 읽기
+const key = fs.readFileSync("./localhost+2-key.pem")
+const cert = fs.readFileSync("./localhost+2.pem")
+
+// (2) Express 앱 + HTTPS 서버 생성
+const app = express()
+const server = https.createServer({ key, cert }, app)
+
+// 전역 미들웨어
+app.disable("etag");
+
 app.use((req, res, next) => {
-  console.log('[DEBUG] Incoming request:', req.method, req.url);
-  next();
-});
-app.use(morgan('dev'));
-app.use(cors(
-  {
-    origin: 'http://localhost:3000',
-    credentials: true
-  }
-));
-app.use(express.json());
-app.use(passport.initialize());
+  console.log("[DEBUG] Incoming request:", req.method, req.url)
 
+  res.header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+  next()
+})
+app.use(morgan("dev"))
+app.use(
+  cors({
+    origin: "https://localhost:3000", // 프론트도 https://localhost:3000 으로 접근해야 함
+    credentials: true, // 쿠키 전송 허용
+  })
+)
+app.use(cookieParser())
+app.use(express.json())
+app.use(passport.initialize())
 
 // 라우트
-app.use('/auth', authRoutes);
-app.use('/keyword', keywordRoutes);
+app.use("/auth", authRoutes)
+app.use("/keyword", keywordRoutes)
+app.use("/api/user", userRoutes)
 
-await connectRedis();
+// Redis 연결
+await connectRedis()
 
-// DB 연결 + 서버 구동
-sequelize.sync().then(() => {
-  console.log('DB sync OK');
-  app.listen(4000, () => console.log(`Server run on http://localhost:4000`));
-});
+// DB 연결 후 서버 구동
+await sequelize.sync()
+console.log("DB sync OK")
+
+// (3) HTTPS 서버 시작
+server.listen(4000, () => {
+  console.log("Server run on https://localhost:4000")
+})

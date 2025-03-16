@@ -30,7 +30,7 @@ app.get('/', (req, res) => {
   res.send('Hello, World!');  // 기본 응답
 });
 app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}`);
+  console.log(`Server is running at https://localhost:${PORT}`);
 });
 
 EOF

@@ -6,36 +6,10 @@ import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import User from '../models/User.js';
 import { Strategy as KakaoStrategy } from 'passport-kakao';
-
 import 'dotenv/config';
-// [1] 로컬 전략 (이메일, 비밀번호)
-passport.use(
-  new LocalStrategy(
-    // 기본 username, password 필드 명을 email, password로 바꿀 수 있음
-    { usernameField: 'email', passwordField: 'password' },
-    async (email, password, done) => {
-      try {
-        // User.findByEmailAndProvider('local') 활용
-        const user = await User.findByEmailAndProvider(email, 'local');
-        if (!user) {
-          // done(에러, 사용자, 추가메시지)
-          return done(null, false, { message: '해당 이메일을 찾을 수 없음' });
-        }
+import bcrypt from 'bcrypt';
 
-        // 비번 비교
-        const isMatch = await User.comparePassword(password, user.password);
-        if (!isMatch) {
-          return done(null, false, { message: '비밀번호가 일치하지 않음' });
-        }
-
-        // 로그인 성공 시 user 반환
-        return done(null, user);
-      } catch (err) {
-        return done(err);
-      }
-    }
-  )
-);
+// TODO: 구글 로그인 전략 중 link-accounts 라우트에서 사용할 수 있도록 수정
 
 // [2] JWT 전략 (토큰 검증)
 passport.use(
@@ -61,6 +35,44 @@ passport.use(
   )
 );
 
+// 로컬 전략
+passport.use(
+  new LocalStrategy(
+    {
+      usernameField: "email",    // POST body에서 email
+      passwordField: "password", // POST body에서 password
+      session: false,
+    },
+    async (email, password, done) => {
+      try {
+        // 1) email 로 유저 찾기
+        const user = await User.findOne({ where: { email } });
+        if (!user) {
+          // 가입된 유저가 없음
+          return done(null, false, { message: "이메일 또는 비밀번호가 잘못되었습니다." });
+        }
+
+        // 2) user.password(또는 user.passwordHash)에 해시가 없으면 => 소셜만 가입된 케이스일 수 있음
+        if (!user.password) {
+          return done(null, false, { message: "이메일 또는 비밀번호가 잘못되었습니다." });
+        }
+
+        // 3) bcrypt.compare(평문, 해시)
+        const match = await bcrypt.compare(password, user.password);
+        if (!match) {
+          // 비번 불일치
+          return done(null, false, { message: "이메일 또는 비밀번호가 잘못되었습니다." });
+        }
+
+        // 4) 모두 통과 => 인증 성공
+        return done(null, user); 
+      } catch (err) {
+        console.error("[LocalStrategy ERROR]", err);
+        return done(err);
+      }
+    }
+  )
+);
 // [3] Google OAuth 2.0 전략
 passport.use(
     new GoogleStrategy(
@@ -74,26 +86,19 @@ passport.use(
           const googleId = profile.id;
           const email = profile.emails[0].value;
   
-          // (A) 먼저, provider='google' && provider_id=googleId 찾기
+          // 1) provider='google', provider_id=googleId 여부
           let user = await User.findOne({
-            where: { provider: 'google', provider_id: googleId },
+            where: { provider: "google", provider_id: googleId },
           });
-  
           if (!user) {
-            // (B) 기존에 구글 연동된 사용자가 없다면,
-            //     혹시 *다른 provider('local')*로 가입된 동일 email이 있는지 찾기
-            const existingLocalUser = await User.findOne({
-              where: { email, provider: 'local' },
-            });
-  
-            if (existingLocalUser) {
-              // (B-1) 해당 email은 이미 로컬로 가입됨. 비밀번호 입력해 계정 연결해야 함.
-              // 여기서는 유저를 새로 생성하지 않고,
-              // "이메일 충돌" 신호를 보내서 라우트 콜백에서 처리하도록 함.
+            // 2) 혹시 로컬로 이미 email 가입이 있는가?
+            const existing = await User.findOne({ where: { email, provider: "local" } });
+            if (existing) {
+              // => 이메일 충돌
               return done(null, false, {
-                message: 'EMAIL_CONFLICT',
-                googleId,      // 충돌된 구글 ID
-                email,         // 충돌된 이메일
+                message: "EMAIL_CONFLICT",
+                googleId,
+                email,
               });
             } else {
               // (B-2) 완전 새로운 email(=DB에 없음) → 새로운 구글 계정으로 생성
@@ -114,46 +119,59 @@ passport.use(
       }
     )
   );
-// [4] Kakao OAuth Strategy
+
+// [4] Kakao OAuth 2.0 전략
 passport.use(
-    new KakaoStrategy(
-      {
-        clientID: process.env.KAKAO_CLIENT_ID,
-        callbackURL: process.env.KAKAO_CALLBACK_URL,
-      },
-      async (accessToken, refreshToken, profile, done) => {
-        try {
-          // profile: 카카오에서 넘겨주는 사용자 정보
-          // 대표적으로 profile.id, profile.username, profile._json 등에 세부 정보가 있음
-          const kakaoId = profile.id;
-  
-          // 카카오에서 이메일 정보를 제공받으려면 "개인정보 동의항목"에서 '이메일' 동의가 필요
-          // profile._json.kakao_account.email 또는 profile._json.kakao_account.email_needs_agreement 등에 있음
-          const email = profile._json?.kakao_account?.email || null;
-  
-          // 1) DB에서 (provider='kakao', provider_id=kakaoId) 찾기
-          let user = await User.findOne({
-            where: { provider: 'kakao', provider_id: kakaoId },
-          });
-  
-          // 2) 없으면 새로 생성
-          if (!user) {
-            // (email이 없을 수도 있으므로, null일 경우 처리 로직 필요할 수 있음)
-            user = await User.create({
-              email: email || '',  // 이메일 없는 경우 '' 등으로 저장
-              provider: 'kakao',
-              provider_id: kakaoId,
-              is_completed: false, // 소셜 추가정보 페이지로 유도하기 위해 false
-            });
+  new KakaoStrategy(
+    {
+      clientID: process.env.KAKAO_CLIENT_ID,
+      callbackURL: process.env.KAKAO_CALLBACK_URL,
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        const kakaoId = profile.id;
+        const email = profile._json?.kakao_account?.email || null;
+
+        // 이미 provider='kakao', provider_id=... 인 유저?
+        let user = await User.findOne({
+          where: { provider: "kakao", provider_id: kakaoId },
+        });
+        if (!user) {
+          // 소셜유저가 없음. 
+          // 1) email이 DB에 있는지?
+          if (email) {
+            const existingUser = await User.findOne({ where: { email } });
+            if (existingUser) {
+              // (A) existingUser가 provider='local' => "비번 인증 후 소셜 연동"
+              if (existingUser.provider === "local") {
+                return done(null, false, {
+                  message: "EMAIL_CONFLICT_LOCAL",
+                  email,
+                  kakaoId,
+                });
+              } else {
+                // (B) existingUser가 'kakao'/'google' => 소셜 vs 소셜 => 가입 불가
+                return done(null, false, {
+                  message: "EMAIL_IN_USE_SOCIAL",
+                });
+              }
+            }
           }
-  
-          // 3) done(null, user) => 인증 성공
-          return done(null, user);
-        } catch (err) {
-          return done(err, false);
+          // 2) 아예 없는 email => 새 user
+          user = await User.create({
+            email: email || "",
+            provider: "kakao",
+            provider_id: kakaoId,
+            is_completed: true,
+          });
         }
+        // 이미 (kakao,kakaoId)인 user
+        return done(null, user);
+      } catch (err) {
+        return done(err, false);
       }
-    )
-  );
-  
+    }
+  )
+);
+
 export default passport;

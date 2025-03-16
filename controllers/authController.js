@@ -3,40 +3,11 @@
 import jwt from 'jsonwebtoken';
 import 'dotenv/config'; // for process.env
 import User from '../models/User.js';
-import { createIdentityVerification } from '../services/portoneService.js';
-import pkg from 'coolsms-node-sdk'
-const coolsms = pkg.default
+import { redisClient } from '../config/redisClient.js';
+import { sendVerificationCode } from '../services/emailService.js';
+import bcrypt from 'bcrypt';
 
 // TODO: coolsms 모듈을 사용하여 문자 메시지 전송 마무리
-
-// SMS 인증용 저장(예시) 
-const smsStore = {};
-
-/**
- * expandBirth6to8
- *   - "YYMMDD" 형태의 6글자를 "YYYYMMDD"로 변환
- */
-function expandBirth6to8(shortBirth) {
-  if (!shortBirth || shortBirth.length !== 6) {
-    throw new Error('Invalid 6글자 생년월일 형식(YYMMDD)이어야 합니다.');
-  }
-
-  const YY = parseInt(shortBirth.slice(0, 2), 10);
-  const MMDD = shortBirth.slice(2); // "MMDD"
-
-  if (YY >= 35) {
-    // 예) 98xxxxx → 1998xxxx
-    return '19' + shortBirth;
-  } else if (YY <= 25) {
-    // 예) 03xxxxx → 2003xxxx
-    return '20' + shortBirth;
-  } else {
-    // 26~34 정도라면? (비즈니스 요구사항에 맞춰 결정)
-    // 여기서는 일단 19로 처리
-    return '19' + shortBirth;
-  }
-}
-
 // ------------------------------------------------------------
 // 토큰 생성 함수
 // ------------------------------------------------------------
@@ -68,7 +39,8 @@ export async function issueTokens(userId) {
 // ------------------------------------------------------------
 export async function refresh(req, res) {
   try {
-    const { refreshToken } = req.body;
+    // 쿠키에서 리프레시 토큰 추출
+    const refreshToken = req.cookies.refreshToken;
     if (!refreshToken) {
       return res.status(400).json({ message: 'No refresh token' });
     }
@@ -97,333 +69,135 @@ export async function refresh(req, res) {
 // ------------------------------------------------------------
 // [3] 소셜 로그인 후 추가 정보 입력
 // ------------------------------------------------------------
-export async function socialAddInfo(req, res) {
+export async function addInfo(req, res) {
   try {
-    // 1) 필요한 필드를 구조 분해 할당
-    //    (만약 birthday6를 소셜 추가정보에서도 받는다 치면, 아래처럼 추가)
     const {
       email,
       name,
       phone,
-      operator,
-      gender,
-      foreigner,
-      birthday6,
-      provider,
-      agreeMarketingTerm,       // 소셜 가입 시에도 6자리로 받는 경우
+      birthday8,
+      provider, // "local", "kakao", "google" ...
+      agreeMarketingTerm,
     } = req.body;
 
-    console.log('[DEBUG] socialAddInfo - req.body =', req.body);
+    console.log("[DEBUG] /addinfo, req.body =", req.body);
 
-    // 2) DB에서 해당 소셜 유저 찾기
-    const user = await User.findOne({
-      where: { email, provider },
-    });
+    // 1) DB에서 user 찾기
+    const user = await User.findOne({ where: { email, provider } });
+
+    // 2) 유저가 정말 없으면 => 잘못된 플로우이므로 에러
     if (!user) {
-      return res.status(404).json({ message: '해당 소셜 유저를 찾을 수 없음' });
+      return res
+        .status(404)
+        .json({ message: "유저가 존재하지 않습니다. (인증 or 임시가입이 안 된 상태)" });
     }
 
-    // 3) 생년월일 변환
-    //    (실제로 6자리를 받아서 변환하고 싶으면 아래와 같이 사용)
-    let dateOfBirth = user.date_of_birth; // 기존 값
-    if (birthday6) {
-      dateOfBirth = expandBirth6to8(birthday6);
-    }
-
-    // 4) 업데이트
+    // 3) 추가 정보 업데이트
     user.name = name;
-    user.date_of_birth = dateOfBirth; // DB 컬럼은 date_of_birth
     user.phone = phone;
-    user.carrier = operator;
-    user.gender = gender;
-    user.foreigner = foreigner;
-    user.is_completed = true;
-    user.agreeMarketingTerm = 1;
+    user.birthday8 = birthday8; // DB 컬럼에 맞게
+    user.agree_marketing_term = agreeMarketingTerm ? 1 : 0;
+    user.is_completed = true; // 최종 가입 완료!
+
+    // =========== 랜덤 아바타 할당 로직 추가 ============
+    // public/avatars/1.png ~ 10.png 중 하나를 무작위 선택
+    const randomIndex = Math.floor(Math.random() * 10) + 1; // 1~10
+    user.avatar_url = `/avatars/${randomIndex}.png`;
+    // ===================================================
+
     await user.save();
 
-    return res.json({ message: '소셜 추가정보 등록 완료', user });
+    // 4) 자동 로그인 or 그냥 완료 응답
+    //    (A) 토큰 발급
+    const tokens = await issueTokens(user.id);
+
+    //    (B) refreshToken -> 쿠키
+    res.cookie("refreshToken", tokens.refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+    });
+
+    //    (C) accessToken -> JSON
+    return res.json({
+      message: "가입 완료",
+      accessToken: tokens.accessToken,
+      redirectUrl: `https://localhost:3000/oauth-redirect?accessToken=${tokens.accessToken}`,
+    });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: '서버 오류' });
+    console.error("[ERROR] /addinfo:", err);
+    return res.status(500).json({ message: "서버 오류" });
   }
 }
 
+
 // ------------------------------------------------------------
-// [A] SMS 코드 발송 (PortOne 본인인증 예시)
+// [4] 회원가입 (Local Signup)
 // ------------------------------------------------------------
-export async function sendSmsCode(req, res) {
+export async function signup(req, res, next) {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ message: '이메일이 필요합니다.' });
+  }
+
   try {
-    // 이 부분에서 birthday6(YYMMDD)로 받는다면 필드 이름을 맞춰주세요.
-    // 또한 아래 로직과 맞추기 위해서는 'birth' 대신 'birthday6'를 쓰든지,
-    // 혹은 expandBirth6to8 -> 'birth' 변환을 하든지 통일이 필요.
-    const {
-      name,
-      birthday6,   // "YYMMDD"
-      phone,
-      operator,
-      gender,      // "male" / "female"
-      foreigner,   // boolean
-    } = req.body;
-
-    // 유효성 검사
-    if (!name || !birthday6 || !phone || !operator || !gender) {
-      return res.status(400).json({ message: '필수 정보가 누락되었습니다.' });
+    // 1) 이미 가입된 이메일인지 확인 (선택)
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ message: '이미 가입된 이메일입니다.' });
     }
 
-    // (1) PortOne: 본인인증 객체 생성
-    //    실제로 PortOne에서 요구하는 birth 형식이 "YYYYMMDD"라면,
-    //    아래처럼 6자리를 8자리로 변환해 준다.
-    const expandedBirth = expandBirth6to8(birthday6);
+    // 2) 인증코드 생성 & Redis 저장 (5분)
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    await redisClient.setEx(`verifyCode:${email}`, 300, code);
 
-    const createPayload = {
-      requestedCustomer: {
-        name,
-        phoneNumber: phone,
-        birth: expandedBirth, // PortOne에서 필요한 필드명
-        gender,
-        isForeigner: foreigner,
-      },
-    };
-
-    // 실제로 아래 함수는 본인인증 API를 호출하는 로직이라고 가정
-    const createResult = await createIdentityVerification(createPayload);
-    const verificationId = createResult.id || createResult.response?.id;
-    if (!verificationId) {
-      return res.status(500).json({ message: 'PortOne returned invalid data' });
-    }
-
-    // (2) SMS 전송 (sendIdentityVerification)
-    const sendPayload = {
-      storeId: process.env.PORTONE_STORE_ID || '',
-      channelKey: process.env.PORTONE_CHANNEL_KEY,
-      customer: {
-        name,
-        phoneNumber: phone,
-        identityNumber: expandedBirth.slice(2), // 예: "980907" 처럼 YYMMDD만 쓰는 경우
-        ipAddress: req.ip || '',
-      },
-      operator,
-      method: 'SMS',
-    };
-
-    const sendResult = await sendIdentityVerification(verificationId, sendPayload);
-
-    // (3) 발송 정보 임시 저장
-    smsStore[phone] = {
-      verificationId,
-      expire: Date.now() + 1000 * 60 * 5, // 5분 후 만료
-    };
+    // 3) 이메일 발송
+    await sendVerificationCode(email, code);
 
     return res.json({
-      message: 'SMS 인증 요청 완료',
-      verificationId,
-      sendResult,
+      message: '인증코드가 이메일로 발송되었습니다.',
+      note: '인증코드 검증은 /verify에서 진행',
     });
-  } catch (error) {
-    console.error('sendSmsCode error:', error);
-    return res.status(500).json({ message: 'Failed to send SMS code' });
-  }
-}
-
-// ------------------------------------------------------------
-// [5] 회원가입 (Local Signup)
-// ------------------------------------------------------------
-export async function verifyAndSignup(req, res) {
-  try {
-    const {
-      email,
-      password,
-      name,
-      birthday6,    // 6글자 ex) "980907"
-      phone,
-      operator,
-      gender,
-      foreigner,
-      code,
-    } = req.body;
-
-    // 1) 문자 인증 로직
-    const record = smsStore[phone];
-    if (!record) {
-      return res.status(400).json({ message: 'No SMS record found' });
-    }
-    if (Date.now() > record.expire) {
-      return res.status(400).json({ message: 'SMS verification expired' });
-    }
-    if (record.code !== code) {
-      return res.status(400).json({ message: 'INVALID_CODE' });
-    }
-
-    // 2) gender 정규화
-    let normalizedGender = null;
-    if (gender && typeof gender === 'string') {
-      const lower = gender.toLowerCase();
-      if (lower === 'MALE' || lower === 'FEMALE') {
-        normalizedGender = lower;
-      }
-    }
-
-    // 3) 6글자 -> 8글자로 변환
-    const date_of_birth = expandBirth6to8(birthday6);
-
-    // 4) DB 가입
-    const newUser = await User.createUser({
-      email,
-      password,
-      name,
-      date_of_birth,   // DB 컬럼명은 date_of_birth
-      phone,
-      carrier: operator,
-      gender: normalizedGender,
-      foreigner,
-      provider: 'local',
-      provider_id: null,
-      role: 'user',
-      is_completed: true,
-
-    });
-
-    return res.json({
-      message: '가입 성공',
-      user: {
-        id: newUser.id,
-        email: newUser.email,
-        name: newUser.name,
-        date_of_birth: newUser.date_of_birth,
-      },
-    });
-  } catch (error) {
-    console.error('signup error:', error);
-    return res.status(500).json({ message: '서버 오류' });
-  }
-}
-
-
-
-// ------------------------------------------------------------
-// COOLSMS SMS 전송
-// ------------------------------------------------------------
-export async function sendPhoneAuth(req, res) {
-  try {
-    const { phoneNumber } = req.body;
-    if (!phoneNumber) {
-      return res.status(400).json({ success: false, message: '전화번호가 없습니다.' });
-    }
-
-    // 인증번호(6자리) 생성
-    const authCode = ('000000' + Math.floor(Math.random() * 999999)).slice(-6);
-
-    // SMS 전송
-    const result = await messageService.send({
-      text: `[MyApp] 인증번호 [${authCode}]를 입력해주세요.`,
-      to: phoneNumber.replace(/[^0-9]/g, ''), // 숫자만 추출
-      from: process.env.SEND_PHONE_NUMBER // 등록된 발신번호
-      // type: 'SMS'
-    });
-
-    console.log('CoolSMS send result:', result);
-
-    // phoneAuthStore에 저장 (만료시간 포함)
-    phoneAuthStore.set(phoneNumber, {
-      code: authCode,
-      expireAt: Date.now() + 3 * 60 * 1000 // 3분 뒤 만료
-    });
-
-    return res.json({ success: true, message: '인증번호가 전송되었습니다.' });
   } catch (err) {
-    console.error('SMS 전송 오류', err);
-    return res.status(500).json({ success: false, message: 'SMS 전송 실패' });
+    console.error('[SIGNUP ERROR]', err);
+    return res.status(500).json({ message: '서버 에러, 인증코드 발송 실패' });
   }
 }
 
 // ------------------------------------------------------------
-// COOLSMS 문자 인증번호 검증 및 회원가입
+// [5] 이메일 인증
 // ------------------------------------------------------------
-export async function verifyPhoneAuth(req, res) {
-  try {
-    const {
-      email,
-      password,
-      name,
-      birthday6,  // "980907" 형태 6자리
-      phone,      // "01012345678" (하이픈 제거)
-      operator,
-      gender,
-      foreigner,
-      code,       // 인증번호
-      agreeMarketingTerm
-    } = req.body;
+export async function verify(req, res) {
+  const { email, code, password } = req.body; // password도 함께 받아야 함(로컬 가입 시)
 
-    // ─────────────────────────────────────
-    // 1) 문자 인증 로직
-    // ─────────────────────────────────────
-    const record = phoneAuthStore.get(phone); 
-    // (과거에 '/phone/send'에서 phoneAuthStore.set(phone, { code, expireAt }) 했다고 가정)
-
-    if (!record) {
-      return res.status(400).json({ message: '발송 이력이 없거나 만료되었습니다.' });
-    }
-
-    if (Date.now() > record.expireAt) {
-      return res.status(400).json({ message: '인증번호가 만료되었습니다. 다시 시도해주세요.' });
-    }
-
-    if (record.code !== code) {
-      return res.status(400).json({ message: 'INVALID_CODE' });
-    }
-
-    // 인증 성공 후 -> 인증 정보 삭제(재사용 방지)
-    phoneAuthStore.delete(phone);
-
-    // ─────────────────────────────────────
-    // 2) gender 정규화
-    // ─────────────────────────────────────
-    let normalizedGender = null;
-    if (gender && typeof gender === 'string') {
-      const upper = gender.toUpperCase();
-      if (upper === 'MALE' || upper === 'FEMALE') {
-        normalizedGender = upper;
-      }
-    }
-
-    // ─────────────────────────────────────
-    // 3) 생년월일(6자리 -> 8자리)
-    // ─────────────────────────────────────
-    const date_of_birth = expandBirth6to8(birthday6);
-    // 예: "980907" -> "19980907" (구현 로직은 utils/dateUtils.js 내 expandBirth6to8 함수)
-
-    // ─────────────────────────────────────
-    // 4) DB 가입 (User 모델 등)
-    // ─────────────────────────────────────
-    const newUser = await User.createUser({
-      email,
-      password,
-      name,
-      date_of_birth,  // DB 컬럼명
-      phone,
-      carrier: operator,
-      gender: normalizedGender,
-      foreigner,
-      provider: 'local',
-      provider_id: null,
-      role: 'user',
-      is_completed: true,
-      agreeMarketingTerm,
-    });
-
-    return res.json({
-      message: '가입 성공',
-      user: {
-        id: newUser.id,
-        email: newUser.email,
-        name: newUser.name,
-        date_of_birth: newUser.date_of_birth,
-      },
-    });
-  } catch (error) {
-    console.error('signup error:', error);
-    return res.status(500).json({ message: '서버 오류' });
+  // 1) Redis
+  const storedCode = await redisClient.get(`verifyCode:${email}`);
+  if (!storedCode) {
+    return res.status(400).json({ message: '인증코드가 만료되었거나 없음' });
   }
+  if (storedCode !== code) {
+    return res.status(400).json({ message: '인증코드가 일치하지 않습니다.' });
+  }
+
+  // 2) 인증 성공 -> code 삭제
+  await redisClient.del(`verifyCode:${email}`);
+
+  // 3) DB user 생성 or 찾기
+  let user = await User.findOne({ where: { email, provider: 'local' } });
+  if (!user) {
+    // 비번 해싱
+    const hashedPw = await bcrypt.hash(password, 10);
+    user = await User.create({
+      email,
+      password: hashedPw,
+      provider: 'local',
+      is_completed: false,  // add-info 단계 전
+    });
+  }
+  return res.json({
+    message: '인증 성공! 이제 /add-info 단계로 가세요.',
+    verified: true,
+  });
 }
 
 // ------------------------------------------------------------
@@ -443,18 +217,78 @@ export async function checkEmail(req, res) {
     return res.status(500).json({ message: '서버 오류' });
   }
 }
+// ------------------------------------------------------------
+// [7] 이메일/비밀번호 체크
+// ------------------------------------------------------------
+export async function checkEmailAndPassword(req, res) {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ message: "이메일/비밀번호가 필요합니다." });
+  }
+  
+  // 1) DB에서 user 찾기
+  const user = await User.findOne({ where: { email } });
+  if (!user) {
+    return res.status(404).json({ message: "가입되지 않은 이메일" });
+  }
 
+  // 2) 비번 비교
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) {
+    return res.status(401).json({ message: "비밀번호가 일치하지 않습니다." });
+  }
+
+  // 3) 성공
+  return res.json({ message: "로그인 성공", user });
+}
+
+// ------------------------------------------------------------
+// [8] 계정 연동
+// ------------------------------------------------------------
+export async function linkAccounts(req, res) {
+  const { email, provider, providerId } = req.body;
+  if (!email || !provider || !providerId) {
+    return res
+      .status(400)
+      .json({ message: "email, provider, providerId가 필요합니다." });
+  }
+
+  try {
+    const user = await User.findOne({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ message: "유저 없음" });
+    }
+
+    user.provider = provider;
+    user.provider_id = providerId;
+    await user.save();
+    // Ensure tokens are awaited properly
+    const tokens = await issueTokens(user.id); // Ensure tokens are awaited properly
+
+    // set-cookie refresh
+    res.cookie("refreshToken", tokens.refreshToken, {
+      httpOnly: true,
+      sameSite: "none",
+      secure: true,
+    });
+    // json 응답으로 accessToken
+    return res.json({ message: "연동+로그인 완료", accessToken: tokens.accessToken });
+  }
+  catch (err) {
+    console.error("[ERROR] /linkAccounts:", err);
+    return res.status(500).json({ message: "서버 오류" });
+  }
+}
 // ------------------------------------------------------------
 // Export default
 // ------------------------------------------------------------
 export default {
   refresh,
-  socialAddInfo,
-  sendSmsCode,
-  verifyAndSignup,
+  addInfo,
   checkEmail,
   issueTokens,
-  sendPhoneAuth,
-  verifyPhoneAuth,
-
+  signup,
+  verify,
+  checkEmailAndPassword,
+  linkAccounts,
 };

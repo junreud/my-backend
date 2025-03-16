@@ -1,73 +1,79 @@
-// keywordGroupingExample.js
-import puppeteer from 'puppeteer';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import { MOBILE_USER_AGENT } from '../config/crawler.js';
+/******************************************************
+ * keywordGrounpingService.js
+ *  - Puppeteer로 모바일(또는 PC) 네이버 페이지를 직접 열어 크롤링
+ *  - axios + cheerio로 HTML만 받아 파싱
+ *  - 공통 설정/함수는 crawler.js에서 import
+ ******************************************************/
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+import puppeteer from "puppeteer";
+import axios from "axios";
+import * as cheerio from "cheerio";
 
-/** 
- * 무작위 좌표 생성 (baseX, baseY) 중심으로 radiusM 안에 위치 
- * - 1도 ≈ 111,320m를 가정하여 단순 계산
+// (★) crawler.js에서 가져오는 부분
+import {
+  loadMobileUAandCookies,
+  loadPcUAandCookies,
+  getRandomCoords,
+  randomDelay
+} from "../config/crawler.js";
+
+/**
+ * “모바일 모드”로 할지 “PC 모드”로 할지 선택하는 헬퍼
  */
-function getRandomCoords(baseX, baseY, radiusM = 300) {
-  const distance = Math.random() * radiusM;  // 0 ~ radiusM 사이 무작위 거리
-  const angle = Math.random() * 2 * Math.PI; // 0 ~ 360도(라디안)
-  const lat0Rad = (baseY * Math.PI) / 180;
-
-  const deltaLat = (distance * Math.cos(angle)) / 111320;
-  const deltaLng =
-    (distance * Math.sin(angle)) /
-    (111320 * Math.cos(lat0Rad));
-
-  return {
-    randY: baseY + deltaLat,
-    randX: baseX + deltaLng,
-  };
+function wantMobile() {
+  // 여기서는 임의로 true(모바일)로 가정
+  // 필요하면 인자나 환경변수를 써서 결정
+  return true;
 }
 
 /**
- * 주어진 페이지(tab)에서 특정 키워드를 모바일 네이버에 검색하여
- * 광고 업체를 제외한 (data-laim-exp-id === 'undefined') 상위 10개 업체명을 배열로 반환
+ * (A) Puppeteer: 네이버에서 키워드 검색 → 상위 10개 업체명 추출
+ *     (모바일 or PC를 cookie + UA로 일치)
  */
 async function crawlTop10NaverResults(page, keyword) {
-  // (1) 랜덤 좌표 생성 (예: 서울시청 인근 기준, 반경 300m)
-  const baseX = 126.977; // 서울시청 근방 경도
-  const baseY = 37.5665; // 서울시청 근방 위도
+  // 1) 무작위 좌표
+  const baseX = 126.977;
+  const baseY = 37.5665;
   const { randX, randY } = getRandomCoords(baseX, baseY, 300);
 
-  // (2) 네이버 모바일 검색 URL (좌표 포함)
-  //    &level=top, &entry=pll 추가는 예시(옵션)
-  const url = `https://m.place.naver.com/place/list?query=${encodeURIComponent(keyword)}&x=${randX}&y=${randY}&level=top&entry=pll`;
+  // 2) 네이버 검색 URL (모바일이면 m.place, PC면 똑같이 m.place를 써도 되나, 
+  //    여기서는 모바일 구조를 주로 쓰는 예시)
+  const url = `https://m.place.naver.com/place/list?query=${encodeURIComponent(
+    keyword
+  )}&x=${randX}&y=${randY}&level=top&entry=pll`;
   console.log(`>>> [${keyword}] final search URL:`, url);
 
-  // (3) 페이지 이동
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  // 3) 페이지 이동
+  await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  // (4) 검색 결과 목록 셀렉터 대기
-  await page.waitForSelector('h1#_header.bh9OH', { timeout: 8000 });
+  // 4) 특정 셀렉터 대기
+  try {
+    await page.waitForSelector("h1#_header.bh9OH", { timeout: 8000 });
+  } catch {
+    console.log(`[WARN] 셀렉터를 찾지 못했습니다. keyword=${keyword}`);
+  }
 
-  // (5) 모든 업체 목록 가져오기
-  const allItems = await page.$$('li.VLTHu');
+  // 5) 모든 업체 목록 li.VLTHu
+  const allItems = await page.$$("li.VLTHu");
 
-  // (6) 광고 업체(laim-exp-id !== 'undefined') 제외, 실제 업체만 추출
+  // (6) 광고 제외 (data-laim-exp-id !== 'undefined')
   const realItems = [];
   for (const li of allItems) {
-    const laimExpId = await li.evaluate(el => el.getAttribute('data-laim-exp-id'));
-    if (laimExpId === 'undefined') {
+    const laimExpId = await li.evaluate((el) =>
+      el.getAttribute("data-laim-exp-id")
+    );
+    if (laimExpId === "undefined") {
       realItems.push(li);
     }
   }
 
-  // 최대 10개만 추출
+  // 최대 10개만
   const topItems = realItems.slice(0, 10);
 
-  // (7) 각 아이템에서 업체명 추출 ('.YwYLL' 사용)
+  // (7) 각 아이템에서 업체명 추출 (.YwYLL)
   const top10Names = [];
   for (const item of topItems) {
-    const name = await item.$eval('.YwYLL', el => el.textContent.trim());
+    const name = await item.$eval(".YwYLL", (el) => el.textContent.trim());
     top10Names.push(name);
   }
 
@@ -75,30 +81,72 @@ async function crawlTop10NaverResults(page, keyword) {
 }
 
 /**
- * “동일한 Top10”을 가지는 키워드를 한 그룹으로 묶는 함수
- *    - 입력: [{ rank, keyword, monthlySearchVolume, top10 }, ...]
- *    - 출력: [{
- *        top10: string[],
- *        items: [
- *          { rank, keyword, monthlySearchVolume },
- *          ...
- *        ]
- *      }, ...]
+ * (B) axios + cheerio: 네이버 HTML GET → 상위 10개 업체명
+ *     (여기도 모바일 or PC UA + 쿠키를 일치시키려면, load...() 사용)
+ */
+async function fetchNaverTop10HTML(keyword, randX, randY) {
+  // URL은 모바일 구조 예시
+  const url = `https://m.place.naver.com/place/list?query=${encodeURIComponent(
+    keyword
+  )}&x=${randX}&y=${randY}&level=top&entry=pll`;
+
+  // (★) PC or Mobile 결정
+  let ua, cookieStr;
+  if (wantMobile()) {
+    ({ ua, cookieStr } = loadMobileUAandCookies());
+    console.log("[DEBUG] fetchNaverTop10HTML (Mobile Mode), UA=", ua);
+  } else {
+    ({ ua, cookieStr } = loadPcUAandCookies());
+    console.log("[DEBUG] fetchNaverTop10HTML (PC Mode), UA=", ua);
+  }
+
+  // (★) axios 요청 헤더
+  const headers = {
+    "User-Agent": ua,
+    Cookie: cookieStr,
+    Accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+  };
+
+  const resp = await axios.get(url, { headers });
+  return resp.data;
+}
+
+/**
+ * (C) 단순 파싱: HTML에서 li.VLTHu 광고 제외 상위 10개 추출
+ */
+function parseNaverTop10(html) {
+  const $ = cheerio.load(html);
+  const allItems = $("li.VLTHu");
+  const realItems = allItems.filter(
+    (i, el) => $(el).attr("data-laim-exp-id") === "undefined"
+  );
+
+  const top10Names = [];
+  realItems.slice(0, 10).each((i, el) => {
+    const name = $(el).find(".YwYLL").text().trim();
+    top10Names.push(name);
+  });
+  return top10Names;
+}
+
+/**
+ * (D) 동일한 Top10 결과를 그룹화
  */
 function groupByTop10(list) {
   const map = new Map();
 
-  list.forEach(item => {
-    // Top10 배열 -> '|'로 이어붙여 문자열 키를 만듦
-    const signature = item.top10.join('|');
-
+  list.forEach((item) => {
+    const signature = item.top10.join("|");
     if (!map.has(signature)) {
       map.set(signature, {
         top10: item.top10,
         items: [],
       });
     }
-
     map.get(signature).items.push({
       rank: item.rank,
       keyword: item.keyword,
@@ -110,83 +158,128 @@ function groupByTop10(list) {
 }
 
 /**
- * 키워드 리스트를 받아서 각 키워드별 mobile naver top10 업체 수집 후,
- * 동일한 top10 결과를 한 그룹으로 묶어 리턴
- * 
- * - 여기서는 "키워드마다 새 탭을 열어" 검색 (headless: false로 하면 탭이 실제로 보임)
+ * (E) Puppeteer 방식으로 키워드 목록을 처리:
+ *     - 새 브라우저 열고, 각 키워드마다 UA+쿠키 적용
+ *       (다만 여기서는 모바일/PC 구분은 "wantMobile()" 한 번만 결정)
  */
 export async function groupKeywordsByNaverTop10(keywordList) {
-  // 1) Puppeteer 브라우저 한 번만 열기 (headless: false => 실제 창)
-  const browser = await puppeteer.launch({ headless: 'new' });
+  // PC or Mobile 결정
+  let ua, cookieStr;
+  if (wantMobile()) {
+    ({ ua, cookieStr } = loadMobileUAandCookies());
+    console.log("[INFO] groupKeywordsByNaverTop10: Mobile Mode");
+  } else {
+    ({ ua, cookieStr } = loadPcUAandCookies());
+    console.log("[INFO] groupKeywordsByNaverTop10: PC Mode");
+  }
+
+  const browser = await puppeteer.launch({ headless: "new" });
   const results = [];
 
   try {
-    // 2) 모든 키워드에 대해 순회하며, 새 탭을 열고 검색
     for (const item of keywordList) {
       const { rank, keyword, monthlySearchVolume } = item;
 
-      // 새 탭 생성
       const page = await browser.newPage();
-      await page.setUserAgent(MOBILE_USER_AGENT);
 
-      // Top10 조회
-      const top10 = await crawlTop10NaverResults(page, keyword);
+      // (★) UA 설정
+      await page.setUserAgent(ua);
+      console.log(`[DEBUG] Puppeteer setUserAgent = ${ua}`);
 
-      // 결과 저장
-      results.push({
-        rank,
-        keyword,
-        monthlySearchVolume,
-        top10,
+      // (★) 쿠키 배열화
+      const cookieArr = cookieStr.split("; ").map((pair) => {
+        const [name, value] = pair.split("=");
+        return {
+          name,
+          value,
+          domain: ".naver.com",
+          path: "/",
+        };
       });
+      await page.setCookie(...cookieArr);
 
-      // 필요 시 딜레이 (너무 빠른 요청으로 인한 차단 방지)
-      await new Promise(r => setTimeout(r, 1000));
+      // 실제 크롤링
+      const top10 = await crawlTop10NaverResults(page, keyword);
+      results.push({ rank, keyword, monthlySearchVolume, top10 });
+
+      await page.close();
+
+      // 차단 방지 간단 딜레이
+      await randomDelay(1, 3);
     }
 
-    // 3) 동일한 Top10 결과를 한 그룹으로 묶기
     const grouped = groupByTop10(results);
-    return grouped;
-
+    return grouped.map((group) => {
+      const combinedKeyword = group.items.map((i) => i.keyword).join(", ");
+      const details = group.items.map((i) => ({
+        rank: i.rank,
+        monthlySearchVolume: i.monthlySearchVolume,
+      }));
+      return { combinedKeyword, details };
+    });
   } catch (err) {
-    console.error('groupKeywordsByNaverTop10 Error:', err);
+    console.error("[ERROR] groupKeywordsByNaverTop10:", err);
     return [];
   } finally {
-    /**
-     * 탭을 그대로 유지하고 싶다면, 여기서 브라우저를 닫지 말고 주석 처리하거나,
-     * 임시로 일정 시간 대기 후 닫을 수도 있습니다.
-     */
-    // await new Promise(r => setTimeout(r, 30000)); // 30초 뒤 닫기 (예시)
-    // await browser.close();
+    await browser.close();
   }
 }
 
-// ______________________________________________
-// 4. 직접 실행 시 main() 호출 (테스트용)
-// ______________________________________________
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+/**
+ * (F) axios + cheerio 버전
+ */
+export async function groupKeywordsByHttpFetch(keywordList) {
+  let index = 0;
+  const results = [];
 
-if (__filename === process.argv[1]) {
-  (async () => {
-    // 예시 키워드 리스트
-    const keywordList = [
-      { rank: 1, keyword: '사당역맛집', monthlySearchVolume: 82000 },
-      { rank: 2, keyword: '사당맛집', monthlySearchVolume: 5400 },
-      { rank: 3, keyword: '사당역고기집', monthlySearchVolume: 2000 },
-      { rank: 4, keyword: '사당역술집', monthlySearchVolume: 9000 },
-      { rank: 5, keyword: '사당고기집', monthlySearchVolume: 12000 },
-    ];
+  while (index < keywordList.length) {
+    // 묶음 크기 5~12
+    const batchSize = Math.floor(Math.random() * 8) + 5;
+    const slice = keywordList.slice(index, index + batchSize);
 
-    // 그룹화 함수 실행
-    const groupedResult = await groupKeywordsByNaverTop10(keywordList);
+    console.log(
+      `[DEBUG] keyword batch size=${batchSize}, index=${index}..${
+        index + batchSize - 1
+      }`
+    );
 
-    // 콘솔에 결과 출력
-    console.log('\n===== Grouped by top10 =====');
-    groupedResult.forEach((group, idx) => {
-      console.log(`\n[Group ${idx + 1}]`);
-      console.log(` top10 -> [${group.top10.join(', ')}]`);
-      console.log(' items ->', group.items);
+    const promises = slice.map(async (item) => {
+      const { rank, keyword, monthlySearchVolume } = item;
+      try {
+        // 무작위 좌표
+        const { randX, randY } = getRandomCoords(126.977, 37.5665, 300);
+
+        // (★) fetch HTML (UA+쿠키는 fetchNaverTop10HTML 내부에서 모바일/PC 결정)
+        const html = await fetchNaverTop10HTML(keyword, randX, randY);
+
+        // parse
+        const top10 = parseNaverTop10(html);
+
+        return { rank, keyword, monthlySearchVolume, top10 };
+      } catch (err) {
+        console.error(`[ERROR] keyword=${keyword} fetch/parse error:`, err);
+        return null;
+      }
     });
-  })();
+
+    const batchResults = await Promise.all(promises);
+    results.push(...batchResults.filter((r) => r));
+
+    index += batchSize;
+
+    // 1~4초 랜덤 대기
+    await randomDelay(1, 4);
+  }
+
+  // group
+  const grouped = groupByTop10(results);
+
+  return grouped.map((group) => {
+    const combinedKeyword = group.items.map((it) => it.keyword).join(", ");
+    const details = group.items.map((it) => ({
+      rank: it.rank,
+      monthlySearchVolume: it.monthlySearchVolume,
+    }));
+    return { combinedKeyword, details };
+  });
 }

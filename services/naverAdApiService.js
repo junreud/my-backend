@@ -110,6 +110,8 @@ export async function getSearchVolumes(keywords = []) {
   // 2) 키워드를 5개 단위로 잘라서 순차 호출
   for (let i = 0; i < uniqueKeywords.length; i += chunkSize) {
     const slice = uniqueKeywords.slice(i, i + chunkSize);
+    console.log('Calling fetchKeywordToolSlice with:', slice); // 디버그
+
     const partial = await fetchKeywordToolSlice(slice);
     mergedResults.push(...partial);
 

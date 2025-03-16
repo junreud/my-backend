@@ -2,6 +2,7 @@
 import { DataTypes, Model } from "sequelize";
 import sequelize from "../config/db.js";  // 필요 시 .js 확장자
 import bcrypt from "bcrypt";
+import Place from './Place.js';
 
 class User extends Model {
   /**
@@ -167,8 +168,8 @@ User.init(
       type: DataTypes.STRING(20),
       allowNull: true,
     },
-    // (추가) date_of_birth (YYMMDD 원본)
-    date_of_birth: {
+    // birthday8
+    birthday8: {
       type: DataTypes.STRING(8),
       allowNull: true,
     },
@@ -222,6 +223,16 @@ User.init(
       allowNull: false,
       defaultValue: 0,
     },
+    // (추가) url_registration
+    url_registration: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    avatar_url: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
   },
   {
     sequelize,
@@ -230,5 +241,8 @@ User.init(
     timestamps: false, // 수동으로 created_at / updated_at 사용 중
   }
 );
+
+// Add association so that User.places is defined
+User.hasMany(Place, { as: 'places', foreignKey: 'user_id' });
 
 export default User;

@@ -9,6 +9,15 @@ const env = process.env.NODE_ENV || 'development';
 const config = require(__dirname + '/../config/config.json')[env];
 const db = {};
 
+// you'll require your model files after they've been properly exported
+// For example:
+// const Place = require('./Place');
+// const Keyword = require('./Keyword');
+// ...
+
+// Because you specifically asked "index.js 파일만 수정해줄래?",
+// just be aware the big issue is the "rank" keyword => "ranking".
+
 let sequelize;
 if (config.use_env_variable) {
   sequelize = new Sequelize(process.env[config.use_env_variable], config);
@@ -16,6 +25,7 @@ if (config.use_env_variable) {
   sequelize = new Sequelize(config.database, config.username, config.password, config);
 }
 
+// read other model files in the same folder
 fs
   .readdirSync(__dirname)
   .filter(file => {
@@ -31,11 +41,36 @@ fs
     db[model.name] = model;
   });
 
+// initialize associations
 Object.keys(db).forEach(modelName => {
   if (db[modelName].associate) {
     db[modelName].associate(db);
   }
 });
+
+// example association code (pseudocode, or you can place them after the models are defined)
+const { Place, UserPlaceKeyword, Keyword, KeywordCrawl, KeywordCrawlResult } = db;
+
+// place vs userPlaceKeywords
+if (Place && UserPlaceKeyword) {
+  Place.hasMany(UserPlaceKeyword, { foreignKey: 'place_id' });
+  UserPlaceKeyword.belongsTo(Place, { foreignKey: 'place_id' });
+}
+// keyword vs userPlaceKeywords
+if (Keyword && UserPlaceKeyword) {
+  Keyword.hasMany(UserPlaceKeyword, { foreignKey: 'keyword_id' });
+  UserPlaceKeyword.belongsTo(Keyword, { foreignKey: 'keyword_id' });
+}
+// keyword -> keywordCrawl
+if (Keyword && KeywordCrawl) {
+  Keyword.hasMany(KeywordCrawl, { foreignKey: 'keyword_id' });
+  KeywordCrawl.belongsTo(Keyword, { foreignKey: 'keyword_id' });
+}
+// keywordCrawl -> keywordCrawlResults
+if (KeywordCrawl && KeywordCrawlResult) {
+  KeywordCrawl.hasMany(KeywordCrawlResult, { foreignKey: 'keyword_crawl_id' });
+  KeywordCrawlResult.belongsTo(KeywordCrawl, { foreignKey: 'keyword_crawl_id' });
+}
 
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;

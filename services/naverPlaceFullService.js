@@ -1,22 +1,34 @@
-// services/naverPlaceFullService.js (ESM 버전)
+// services/naverPlaceFullService.js (ESM version)
 
-import axios from 'axios';
-import { MOBILE_USER_AGENT, PROXY_SERVER } from '../config/crawler.js';
-import HttpsProxyAgent from 'https-proxy-agent';
-import puppeteer from 'puppeteer';   // Puppeteer import (공용 사용)
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import axios from "axios";
+import puppeteer from "puppeteer";
+import HttpsProxyAgent from "https-proxy-agent";
 
-// ------------------------------------------------------------------
-// 최종 메인 함수
-//  1) Axios로 업체 디테일 정보 + 대표키워드 + (x, y 좌표)
-//  2) Puppeteer로 블로그리뷰 10개 + 업체소개글 + "새로오픈" 여부
-//  3) 통합하여 반환
-// ------------------------------------------------------------------
+// (★) Import from the new crawler.js
+//     loadMobileUAandCookies, loadPcUAandCookies => load matching UA + cookies
+//     PROXY_SERVER => unified proxy config
+import {
+  loadMobileUAandCookies,
+  loadPcUAandCookies,
+  PROXY_SERVER
+} from "../config/crawler.js";
+
+/**
+ * Decide if the URL is "mobile" or not, e.g. if it contains "m.place.naver.com"
+ */
+function isMobileUrl(url) {
+  return url.includes("m.place.naver.com");
+}
+/**
+ * 메인 함수
+ *  1) Axios로 업체 디테일 정보 + 대표키워드 + (x, y 좌표)
+ *  2) Puppeteer로 블로그리뷰 10개 + 업체소개글 + "새로오픈" 여부
+ *  3) 합쳐서 반환
+ */
 export async function getNaverPlaceFullInfo(placeUrl) {
   // (1) Axios 파트
   const axiosResult = await getPlaceDetailWithAxios(placeUrl);
-
+  
   // (2) Puppeteer 파트
   const puppeteerResult = await getReviewAndIntroWithPuppeteer(placeUrl);
 
@@ -34,15 +46,34 @@ export async function getNaverPlaceFullInfo(placeUrl) {
 // ------------------------------------------------------------------
 async function getPlaceDetailWithAxios(placeUrl) {
   try {
-    let agent = null;
-    if (PROXY_SERVER && PROXY_SERVER.trim() !== '') {
-      agent = new HttpsProxyAgent(PROXY_SERVER);
-      console.log('[INFO] Using proxy for Axios:', PROXY_SERVER);
+    // Decide if we should use mobile or PC cookies
+    let ua, cookieStr;
+    if (isMobileUrl(placeUrl)) {
+      ({ ua, cookieStr } = loadMobileUAandCookies());
+      console.log("[INFO] Using mobile UA/cookies for Axios");
+    } else {
+      ({ ua, cookieStr } = loadPcUAandCookies());
+      console.log("[INFO] Using PC UA/cookies for Axios");
     }
 
+    // Proxy?
+    let agent = null;
+    if (PROXY_SERVER && PROXY_SERVER.trim() !== "") {
+      agent = new HttpsProxyAgent(PROXY_SERVER);
+      console.log("[INFO] Using proxy for Axios:", PROXY_SERVER);
+    }
+
+    // Use the chosen UA + cookie
     const { data: html } = await axios.get(placeUrl, {
       headers: {
-        'User-Agent': MOBILE_USER_AGENT,
+        "User-Agent": ua,
+        "Cookie": cookieStr,
+        // Optionally add more "natural" headers:
+        "Accept":
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
       },
       ...(agent ? { httpsAgent: agent, httpAgent: agent } : {}),
     });
@@ -50,7 +81,7 @@ async function getPlaceDetailWithAxios(placeUrl) {
     // window.__APOLLO_STATE__ 추출
     const match = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\});/);
     if (!match) {
-      console.warn('[WARN] getPlaceDetailWithAxios - __APOLLO_STATE__ not found');
+      console.warn("[WARN] getPlaceDetailWithAxios - __APOLLO_STATE__ not found");
       return {
         placeId: null,
         name: null,
@@ -82,7 +113,7 @@ async function getPlaceDetailWithAxios(placeUrl) {
       y
     };
   } catch (err) {
-    console.error('[ERROR] getPlaceDetailWithAxios:', err.message);
+    console.error("[ERROR] getPlaceDetailWithAxios:", err.message);
     return {
       placeId: null,
       name: null,
@@ -99,13 +130,13 @@ async function getPlaceDetailWithAxios(placeUrl) {
 // (A) 업체 디테일 파싱
 function parsePlaceDetail(apolloData) {
   const possiblePrefixes = [
-    'PlaceDetailBase:',
-    'RestaurantDetailBase:',
-    'HairshopDetailBase:',
+    "PlaceDetailBase:",
+    "RestaurantDetailBase:",
+    "HairshopDetailBase:",
     // 필요시 추가
   ];
-  const detailKey = Object.keys(apolloData).find(k =>
-    possiblePrefixes.some(prefix => k.startsWith(prefix))
+  const detailKey = Object.keys(apolloData).find((k) =>
+    possiblePrefixes.some((prefix) => k.startsWith(prefix))
   );
   if (!detailKey) {
     return {
@@ -120,7 +151,7 @@ function parsePlaceDetail(apolloData) {
   const detailObj = apolloData[detailKey];
   return {
     placeId: detailObj.id,
-    name: detailObj.name,
+    place_name: detailObj.name,
     category: detailObj.category,
     address: detailObj.address,
     roadAddress: detailObj.roadAddress
@@ -129,7 +160,7 @@ function parsePlaceDetail(apolloData) {
 
 // (B) 대표 키워드(keywordList) 파싱
 function findKeywordListDfs(node) {
-  if (node && typeof node === 'object') {
+  if (node && typeof node === "object") {
     // 1) 현재 node에 "keywordList"가 있는지 확인
     if (Array.isArray(node.keywordList)) {
       return node.keywordList;
@@ -148,8 +179,8 @@ function findKeywordListDfs(node) {
 
 // (C) x, y 좌표 파싱 (Panorama 섹션에서 lon, lat 가져옴)
 function parseCoordinates(apolloData) {
-  const panoramaKey = Object.keys(apolloData).find(k =>
-    k.startsWith('Panorama:')
+  const panoramaKey = Object.keys(apolloData).find((k) =>
+    k.startsWith("Panorama:")
   );
   if (!panoramaKey) {
     return { x: null, y: null };
@@ -165,67 +196,84 @@ function parseCoordinates(apolloData) {
 // ------------------------------------------------------------------
 // (2) Puppeteer로 블로그리뷰 최대 10개 + 업체 소개글 + "새로오픈" 여부 파싱
 // ------------------------------------------------------------------
-async function getReviewAndIntroWithPuppeteer(
-  placeUrl,
-  userAgent = MOBILE_USER_AGENT,
-  proxyServer = PROXY_SERVER
-) {
+async function getReviewAndIntroWithPuppeteer(placeUrl) {
   let browser;
   try {
+    // If placeUrl includes "m.place.naver.com", use mobile cookies. Otherwise, PC
+    let ua, cookieStr;
+    if (isMobileUrl(placeUrl)) {
+      ({ ua, cookieStr } = loadMobileUAandCookies());
+      console.log("[INFO] Using mobile UA/cookies for Puppeteer");
+    } else {
+      ({ ua, cookieStr } = loadPcUAandCookies());
+      console.log("[INFO] Using PC UA/cookies for Puppeteer");
+    }
+
     // 브라우저 실행 옵션
     const launchOptions = {
-      headless: 'new' // Puppeteer 최신 헤드리스 모드
+      headless: "new" // Puppeteer 최신 헤드리스 모드
     };
 
     // 프록시 설정 (옵션)
-    if (proxyServer && proxyServer.trim() !== '') {
-      launchOptions.args = [`--proxy-server=${proxyServer}`];
+    if (PROXY_SERVER && PROXY_SERVER.trim() !== "") {
+      launchOptions.args = [`--proxy-server=${PROXY_SERVER}`];
+      console.log("[INFO] Puppeteer using proxy:", PROXY_SERVER);
     }
 
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
 
-    // User-Agent 지정 (모바일 UA 등)
-    await page.setUserAgent(userAgent);
+    // User-Agent 지정
+    await page.setUserAgent(ua);
+    console.log(`[INFO] Puppeteer UA => ${ua}`);
+
+    // Convert cookieStr -> Puppeteer cookies
+    const cookieArr = cookieStr.split("; ").map((pair) => {
+      const [name, value] = pair.split("=");
+      return {
+        name,
+        value,
+        domain: ".naver.com", // broad domain
+        path: "/"
+      };
+    });
+    // apply them before navigation
+    await page.setCookie(...cookieArr);
 
     //------------------------------------------------------------------
     // [A] 메인 페이지로 진입 -> 리다이렉트 후 최종 URL 확인
     //------------------------------------------------------------------
-    await page.goto(placeUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(placeUrl, { waitUntil: "domcontentloaded" });
 
     // body 로드 대기
-    await page.waitForSelector('body');
+    await page.waitForSelector("body");
 
     // 현재 페이지 (네이버가 리다이렉트 시킨 최종 URL)
     const finalMainUrl = page.url();
-    console.log('[INFO] finalMainUrl =>', finalMainUrl);
+    console.log("[INFO] finalMainUrl =>", finalMainUrl);
 
     // "새로오픈" 요소가 있는지 확인
-    const isNewlyOpened = (await page.$('span.h69bs.DjPAB')) !== null;
+    const isNewlyOpened = (await page.$("span.h69bs.DjPAB")) !== null;
 
     //------------------------------------------------------------------
     // [B] baseUrl을 추출해서 "블로그 리뷰" 페이지 이동
     //------------------------------------------------------------------
-    // ex) finalMainUrl = https://m.place.naver.com/hairshop/1498717972/home
-    // 아래 정규식으로 /home, /map, /review..., /information 등을 잘라내면
-    // baseUrl = https://m.place.naver.com/hairshop/1498717972
     const baseUrl = finalMainUrl.replace(
       /\/(home|about|map|review.*|information|menu).*$/,
-      ''
+      ""
     );
-    console.log('[INFO] baseUrl =>', baseUrl);
+    console.log("[INFO] baseUrl =>", baseUrl);
 
     // 블로그 리뷰 페이지 이동
     const reviewUrl = `${baseUrl}/review/ugc?type=photoView`;
-    await page.goto(reviewUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(reviewUrl, { waitUntil: "domcontentloaded" });
 
     // 리뷰 셀렉터
-    const reviewSelector = '.pui__dGLDWy';
-
+    const reviewSelector = ".pui__dGLDWy";
     try {
       await page.waitForSelector(reviewSelector, { timeout: 5000 });
     } catch (e) {
-      console.warn('[WARN] 블로그 리뷰 셀렉터 대기 실패:', e.message);
+      console.warn("[WARN] 블로그 리뷰 셀렉터 대기 실패:", e.message);
     }
 
     // 최대 10개 리뷰 제목 추출
@@ -233,27 +281,25 @@ async function getReviewAndIntroWithPuppeteer(
       const elements = document.querySelectorAll(sel);
       return [...elements].map((el) => el.textContent.trim());
     }, reviewSelector);
-
     const blogReviewTitles = reviewTitles.slice(0, 10);
 
     //------------------------------------------------------------------
     // [C] 업체 소개글 페이지 이동
     //------------------------------------------------------------------
     const infoUrl = `${baseUrl}/information`;
-    await page.goto(infoUrl, { waitUntil: 'domcontentloaded' });
+    await page.goto(infoUrl, { waitUntil: "domcontentloaded" });
 
-    // 소개글 셀렉터 (.T8RFa.CEyr5, .T8RFa 등 다 대체 가능)
-    const introSelector = '.T8RFa.CEyr5, .T8RFa';
+    const introSelector = ".T8RFa.CEyr5, .T8RFa";
     try {
       await page.waitForSelector(introSelector, { timeout: 5000 });
     } catch (e) {
-      console.warn('[WARN] 업체 소개글 셀렉터 대기 실패:', e.message);
+      console.warn("[WARN] 업체 소개글 셀렉터 대기 실패:", e.message);
     }
 
     // 업체 소개글 추출
     const shopIntro = await page.evaluate((sel) => {
       const el = document.querySelector(sel);
-      return el ? el.textContent.trim() : '';
+      return el ? el.textContent.trim() : "";
     }, introSelector);
 
     // 결과 반환
@@ -263,10 +309,10 @@ async function getReviewAndIntroWithPuppeteer(
       isNewlyOpened
     };
   } catch (err) {
-    console.error('[ERROR] getReviewAndIntroWithPuppeteer:', err);
+    console.error("[ERROR] getReviewAndIntroWithPuppeteer:", err);
     return {
       blogReviewTitles: [],
-      shopIntro: '',
+      shopIntro: "",
       isNewlyOpened: false
     };
   } finally {
@@ -279,21 +325,58 @@ async function getReviewAndIntroWithPuppeteer(
 // ------------------------------------------------------------------
 // [F] 단독 실행 시 테스트
 // ------------------------------------------------------------------
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+import fs from "fs";
+
+// ESM 전용: __filename / __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 function runTest() {
   (async () => {
-    // "헤어샵" 예시 URL
-    const placeUrl = 'https://m.place.naver.com/place/1282116811/home';
-    console.log('[INFO] placeUrl =', placeUrl);
+    // e.g. "사당맛집" or "헤어샵"
+    const placeUrl = "https://m.place.naver.com/place/1282116811/home";
+    console.log("[INFO] placeUrl =", placeUrl);
 
+    // (1) 한번 raw html 받아 파일 저장 (디버그용)
+    try {
+      console.log("[INFO] -- (A) axios.get() 로 raw html 받아오기...");
+      // Decide if mobile or pc
+      let ua, cookieStr;
+      if (isMobileUrl(placeUrl)) {
+        ({ ua, cookieStr } = loadMobileUAandCookies());
+      } else {
+        ({ ua, cookieStr } = loadPcUAandCookies());
+      }
+
+      const resp = await axios.get(placeUrl, {
+        headers: {
+          "User-Agent": ua,
+          "Cookie": cookieStr,
+          "Accept":
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+          "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
+      const html = resp.data;
+      fs.writeFileSync("debugPlace.html", html, "utf-8");
+      console.log("[INFO] html saved to debugPlace.html");
+    } catch (err) {
+      console.error("[ERROR] Saving HTML:", err.message);
+    }
+
+    // (2) 이후 getNaverPlaceFullInfo 실행
+    console.log("[INFO] -- (B) getNaverPlaceFullInfo...");
     const finalInfo = await getNaverPlaceFullInfo(placeUrl);
-    console.log('[INFO] Result =');
+    console.log("[INFO] Result =");
     console.log(JSON.stringify(finalInfo, null, 2));
   })();
 }
 
+// node naverPlaceFullService.js
 if (__filename === process.argv[1]) {
   runTest();
 }

@@ -18,7 +18,7 @@ const ses = new AWS.SES({ apiVersion: "2010-12-01" });
  */
 export async function sendVerificationCode(toEmail, code) {
   // 제목에 인증번호 포함
-  const subjectLine = `라카비 코드는 ${code}입니다`;
+  const subjectLine = `인증번호는 ${code}입니다`;
 
   // HTML 본문 예시 (원하는 대로 꾸미세요)
   const htmlContent = `
@@ -30,7 +30,7 @@ export async function sendVerificationCode(toEmail, code) {
 </head>
 <body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background-color:#ffffff;">
   <div style="max-width:600px;margin:0 auto;padding:20px;">
-    <h1 style="margin-bottom:16px;">OpenAI</h1>
+    <h1 style="margin-bottom:16px;">LAKABE</h1>
     <p style="font-size:16px;margin-bottom:24px;">
       다음 임시 인증 코드를 입력해 계속하세요:
     </p>
