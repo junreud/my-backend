@@ -10,6 +10,7 @@ import cookieParser from "cookie-parser"
 import authRoutes from "./routes/authRoutes.js"
 import keywordRoutes from "./routes/keywordRoutes.js"
 import userRoutes from "./routes/userRoutes.js"
+import placeRoutes from "./routes/placeRoutes.js"
 import { connectRedis } from "./config/redisClient.js"
 
 // (1) HTTPS 인증서 읽기
@@ -43,7 +44,8 @@ app.use(passport.initialize())
 // 라우트
 app.use("/auth", authRoutes)
 app.use("/keyword", keywordRoutes)
-app.use("/api/user", userRoutes)
+app.use("/api", userRoutes)
+app.use("/api/place", placeRoutes); // 원래대로 /api/place 유지
 
 // Redis 연결
 await connectRedis()

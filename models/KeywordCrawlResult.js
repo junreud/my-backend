@@ -7,8 +7,12 @@ const KeywordCrawlResult = sequelize.define('KeywordCrawlResult', {
     autoIncrement: true,
     primaryKey: true,
   },
-  keyword_crawl_id: {
+  keyword_id: {
     type: DataTypes.BIGINT.UNSIGNED,
+    allowNull: false,
+  },
+  ranking: {
+    type: DataTypes.INTEGER,
     allowNull: false,
   },
   place_id: {
@@ -31,16 +35,12 @@ const KeywordCrawlResult = sequelize.define('KeywordCrawlResult', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
-  ranking: {
+  savedCount: {
     type: DataTypes.INTEGER,
-    allowNull: false,
-  },
-  rep_keyword: {
-    type: DataTypes.STRING(200),
     allowNull: true,
   },
-  saved_count: {
-    type: DataTypes.INTEGER,
+  keywordList: {
+    type: DataTypes.STRING(255),
     allowNull: true,
   },
   created_at: {

@@ -5,11 +5,10 @@ import puppeteer from "puppeteer";
 import HttpsProxyAgent from "https-proxy-agent";
 
 // (★) Import from the new crawler.js
-//     loadMobileUAandCookies, loadPcUAandCookies => load matching UA + cookies
+//     loadMobileUAandCookies => load matching UA + cookies
 //     PROXY_SERVER => unified proxy config
 import {
   loadMobileUAandCookies,
-  loadPcUAandCookies,
   PROXY_SERVER
 } from "../config/crawler.js";
 
@@ -47,14 +46,12 @@ export async function getNaverPlaceFullInfo(placeUrl) {
 async function getPlaceDetailWithAxios(placeUrl) {
   try {
     // Decide if we should use mobile or PC cookies
+    // (★) 5) PC vs 모바일 쿠키/UA를 랜덤 적용
     let ua, cookieStr;
-    if (isMobileUrl(placeUrl)) {
-      ({ ua, cookieStr } = loadMobileUAandCookies());
-      console.log("[INFO] Using mobile UA/cookies for Axios");
-    } else {
-      ({ ua, cookieStr } = loadPcUAandCookies());
-      console.log("[INFO] Using PC UA/cookies for Axios");
-    }
+    // 모바일 UA/쿠키
+    ({ ua, cookieStr } = loadMobileUAandCookies());
+    console.log('[INFO] 모바일 UA 선택:', ua);
+
 
     // Proxy?
     let agent = null;
@@ -200,14 +197,12 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
   let browser;
   try {
     // If placeUrl includes "m.place.naver.com", use mobile cookies. Otherwise, PC
+    // (★) 5) PC vs 모바일 쿠키/UA를 랜덤 적용
     let ua, cookieStr;
-    if (isMobileUrl(placeUrl)) {
-      ({ ua, cookieStr } = loadMobileUAandCookies());
-      console.log("[INFO] Using mobile UA/cookies for Puppeteer");
-    } else {
-      ({ ua, cookieStr } = loadPcUAandCookies());
-      console.log("[INFO] Using PC UA/cookies for Puppeteer");
-    }
+    // 모바일 UA/쿠키
+    ({ ua, cookieStr } = loadMobileUAandCookies());
+    console.log('[INFO] 모바일 UA 선택:', ua);
+
 
     // 브라우저 실행 옵션
     const launchOptions = {
@@ -343,12 +338,12 @@ function runTest() {
     try {
       console.log("[INFO] -- (A) axios.get() 로 raw html 받아오기...");
       // Decide if mobile or pc
-      let ua, cookieStr;
-      if (isMobileUrl(placeUrl)) {
-        ({ ua, cookieStr } = loadMobileUAandCookies());
-      } else {
-        ({ ua, cookieStr } = loadPcUAandCookies());
-      }
+    // (★) 5) PC vs 모바일 쿠키/UA를 랜덤 적용
+    let ua, cookieStr;
+    // 모바일 UA/쿠키
+    ({ ua, cookieStr } = loadMobileUAandCookies());
+    console.log('[INFO] 모바일 UA 선택:', ua);
+
 
       const resp = await axios.get(placeUrl, {
         headers: {

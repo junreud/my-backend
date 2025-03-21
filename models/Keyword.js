@@ -12,7 +12,11 @@ const Keyword = sequelize.define('Keyword', {
     allowNull: false,
     unique: true,
   },
-  last_crawled_date: {
+  basic_last_crawled_date: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  detail_last_crawled_date: {
     type: DataTypes.DATE,
     allowNull: true,
   },
@@ -23,6 +27,16 @@ const Keyword = sequelize.define('Keyword', {
   isRestaurant: {
     type: DataTypes.BOOLEAN,
     allowNull: true,
+  },
+  basic_crawled: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+    allowNull: false
+  },
+  detail_crawled: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+    allowNull: false
   },
   created_at: {
     type: DataTypes.DATE,

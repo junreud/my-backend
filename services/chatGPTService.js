@@ -24,8 +24,8 @@ export async function analyzePlaceWithChatGPT(placeInfo) {
 
   // (B) 사용자 요청  
   const userPrompt = `
-아래 JSON 데이터를 보고 다음 [규칙]에 따라 **키워드 추출 과정과 그 이유**를 먼저 설명한 뒤, 
-마지막에 **JSON 형식**으로 **locationKeywords**와 **featureKeywords**를 제공해주세요.
+아래 JSON 데이터를 보고 다음 [규칙]에 따라 **JSON 형식**으로 **locationKeywords**와 **featureKeywords**를 제공해주세요.
+설명은 간략하게만 해주세요.
 
 [규칙]
 1) locationKeywords:
@@ -47,10 +47,16 @@ export async function analyzePlaceWithChatGPT(placeInfo) {
      **무조건 featureKeywords에만** 넣는다. locationKeywords에 절대 포함하지 않는다.
      
 3) 답변 형태:
-   - 먼저, 왜 그 키워드를 locationKeywords 혹은 featureKeywords로 분류했는지 간략히 설명합니다. (한국어)
-   - 마지막에 **JSON 코드 블록**(\`\`\`json ... \`\`\`)에 
-     **locationKeywords** 배열과 **featureKeywords** 배열을 제공해주세요.
-   - JSON 내부엔 설명이나 주석을 넣지 말고 순수 키워드만 작성해주십시오.
+   - **반드시 먼저 JSON 코드 블록**을 제공한 후 설명을 추가해 주세요:
+   
+   \`\`\`json
+   {
+     "locationKeywords": ["키워드1", "키워드2", ...],
+     "featureKeywords": ["키워드1", "키워드2", ...]
+   }
+   \`\`\`
+   
+   - 그 다음에 간략하게 분류 이유를 설명해 주세요.
 
 [JSON 데이터]
 \`\`\`json
@@ -61,34 +67,61 @@ ${JSON.stringify(placeInfo, null, 2)}
   try {
     // (A) ChatGPT API 호출
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',  // 모델명은 예시
+      model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
       temperature: 0.3,
-      max_tokens: 500,
+      max_tokens: 1000,  // 토큰 수 증가
     });
 
     // (B) ChatGPT 답변 본문
     const answer = response.choices?.[0]?.message?.content?.trim() || '';
-
+    console.log('ChatGPT Answer:', answer);
     // (C) 정규식으로 ```json ... ``` 추출
     const jsonExtractRegex = /```json([\s\S]*?)```/;
     const jsonMatch = answer.match(jsonExtractRegex);
 
+    console.log('JSON Match:', jsonMatch); // Fixed: Log the match result, not the regex
+    
     let parsed;
     if (jsonMatch && jsonMatch[1]) {
       const rawJson = jsonMatch[1].trim();
       try {
         parsed = JSON.parse(rawJson);
       } catch (parseErr) {
-        console.warn('[WARN] JSON parsing failed:', rawJson);
-        parsed = { locationKeywords: [], featureKeywords: [] };
+        console.warn('[WARN] JSON parsing failed:', parseErr.message);
+        console.warn('Raw JSON content:', rawJson);
+        
+        // 더 강력한 후처리 시도: JSON 형식 수정 시도
+        try {
+          // 마지막에 누락된 괄호를 추가하는 등의 수정
+          const fixedJson = rawJson.replace(/\}[\s]*$/, '}').replace(/\}[\s]*\][\s]*$/, '}]');
+          parsed = JSON.parse(fixedJson);
+          console.log('[INFO] JSON fixed and parsed successfully');
+        } catch (fixErr) {
+          console.warn('[WARN] JSON fix attempt failed:', fixErr.message);
+          parsed = { locationKeywords: [], featureKeywords: [] };
+        }
       }
     } else {
-      console.warn('[WARN] JSON 형식의 데이터를 찾을 수 없습니다.');
-      parsed = { locationKeywords: [], featureKeywords: [] };
+      // JSON 블록을 찾지 못한 경우, 응답 전체에서 JSON 객체 추출 시도
+      console.warn('[WARN] JSON 코드 블록을 찾을 수 없어 전체 응답에서 JSON 추출 시도');
+      try {
+        const jsonPattern = /\{\s*"locationKeywords"\s*:.*"featureKeywords"\s*:.*\}/s;
+        const jsonCandidate = answer.match(jsonPattern);
+        
+        if (jsonCandidate && jsonCandidate[0]) {
+          parsed = JSON.parse(jsonCandidate[0]);
+          console.log('[INFO] JSON extracted from full response');
+        } else {
+          parsed = { locationKeywords: [], featureKeywords: [] };
+        }
+      } catch (err) {
+        console.warn('[WARN] JSON 추출 실패:', err.message);
+        parsed = { locationKeywords: [], featureKeywords: [] };
+      }
     }
 
     // (D) 추출된 배열

@@ -4,17 +4,44 @@ import Place from "../models/Place.js";
 import { normalizePlaceUrl } from "../services/normalizePlaceUrl.js";
 import { getNaverPlaceFullInfo } from "../services/naverPlaceFullService.js";
 import { analyzePlaceWithChatGPT } from "../services/chatGPTService.js";
-import { groupKeywordsByHttpFetch } from "../services/keywordGrounpingService.js";
+import { groupKeywordsByNaverTop10 } from "../services/keywordGrounpingService.js";
 import { getSearchVolumes } from "../services/naverAdApiService.js";
 // 추가: Keyword 모델을 직접 임포트
 import Keyword from "../models/Keyword.js";
 import UserPlaceKeyword from "../models/UserPlaceKeyword.js";
 // 추가: sequelize 임포트 (raw query 사용)
 import sequelize from "../config/db.js";
+// 추가: 크롤러 서비스 임포트
+import { crawlKeywordBasic } from "../services/crawler/basicCrawlerService.js";
+import { detailQueue } from "../services/crawler/keywordQueue.js";
+/**
+ * 사용자가 이미 해당 장소를 등록했는지 확인하는 함수
+ * @param {string} userId 사용자 ID
+ * @param {string} placeId 장소 ID
+ * @returns {Promise<boolean>} 이미 등록되었다면 true, 그렇지 않으면 false
+ */
+async function checkPlaceExists(userId, placeId) {
+  try {
+    // Sequelize를 사용하여 장소 존재 여부 확인
+    const place = await Place.findOne({
+      where: {
+        user_id: userId,
+        place_id: placeId
+      }
+    });
+    
+    // 결과가 있으면 이미 등록된 장소
+    return !!place;
+  } catch (error) {
+    console.error('[ERROR] checkPlaceExists:', error);
+    // 에러 발생 시 false 반환 (정상 흐름 유지)
+    return false;
+  }
+}
 
 export async function normalizeUrlHandler(req, res) {
   try {
-    const { url, platform } = req.body;
+    const { url, platform, userId } = req.body;
     if (platform !== "naver") {
       return res.status(400).json({ success: false, message: "현재는 NAVER 플랫폼만 지원합니다." });
     }
@@ -34,29 +61,49 @@ export async function normalizeUrlHandler(req, res) {
 
     // (2) Passport JWT 인증이 붙어 있다면, 여기서 req.user가 존재
     //     userId를 placeInfo에 추가하여 프론트로 전달
-    const userId = req.user?.id
-    if (!userId) {
+    const authenticatedUserId = req.user?.id || userId;
+    if (!authenticatedUserId) {
       // 혹은 필요 시 401 리턴
       return res.status(401).json({
         success: false,
         message: "인증되지 않은 사용자입니다.",
-      })
+      });
     }
+    
     // placeInfo에 userid 필드로 넣기
-    placeInfo.userid = userId
+    placeInfo.userid = authenticatedUserId;
 
-    console.log(`[INFO] Normalized URL = ${normalizedUrl}`)
-    console.log(`[INFO] Place Info = ${JSON.stringify(placeInfo)}`)
+    // (3) 장소 ID 추출 - normalizePlaceUrl에서 이미 추출되었으므로, 여기서 다시 추출
+    // URL에서 place_id 추출 (restaurant/12345678 또는 place/12345678 형식에서)
+    const match = normalizedUrl.match(/(?:place\/|restaurant\/|cafe\/|\/)(\d+)(?:\/|$|\?)/);
+    if (!match) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "URL에서 place ID를 추출할 수 없습니다." 
+      });
+    }
+    const placeId = match[1];
+
+    // (4) DB에서 이미 등록된 place_id인지 확인
+    const alreadyRegistered = await checkPlaceExists(authenticatedUserId, placeId);
+
+    console.log(`[INFO] Normalized URL = ${normalizedUrl}`);
+    console.log(`[INFO] Place Info = ${JSON.stringify(placeInfo)}`);
+    console.log(`[INFO] Already Registered = ${alreadyRegistered}`);
+    
     return res.json({
       success: true,
       normalizedUrl,
       placeInfo,
-    })
+      alreadyRegistered // 중복 등록 여부 플래그 추가
+    });
   } catch (err) {
-    console.error("[ERROR] normalizeUrlHandler:", err)
-    return res.status(500).json({ success: false, message: err.message })
+    console.error("[ERROR] normalizeUrlHandler:", err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 }
+
+
 /** 
  * 2) places 테이블에 저장 
  *    POST /analysis/store-place
@@ -250,20 +297,35 @@ export async function groupKeywordsHandler(req, res) {
       });
     }
 
-    // 1) 네이버 상위 10개 기반으로 그룹화
-    const finalKeywords = await groupKeywordsByHttpFetch(externalDataList);
-
-    // 콘솔 디버깅
-    console.log("[DEBUG] finalKeywords =", finalKeywords);
-
-    // 2) 여기서 바로 DB 저장 로직 호출 (에러 없이 처리하도록, 핸들러 대신 로직 함수 사용)
-    await saveGroupedKeywordsLogic(finalKeywords);
-
-    // 3) 응답
-    return res.json({
-      success: true,
-      finalKeywords,
-    });
+    // 클라이언트 타임아웃 방지를 위해 처리할 키워드 수 제한
+    const MAX_KEYWORDS = 20; // 안정적으로 처리 가능한 수로 감소
+    const limitedKeywords = externalDataList.slice(0, MAX_KEYWORDS);
+    
+    if (limitedKeywords.length < externalDataList.length) {
+      console.log(`[INFO] 너무 많은 키워드가 요청됨. ${externalDataList.length}개 중 ${MAX_KEYWORDS}개만 처리합니다.`);
+    }
+    
+    // 항상 동기적으로 처리 (비동기 처리 제거)
+    const finalKeywords = await groupKeywordsByNaverTop10(limitedKeywords);
+    
+    // 모든 그룹을 저장 (단일 키워드 그룹 포함)
+    if (finalKeywords && finalKeywords.length > 0) {
+      await saveAllKeywordGroupsLogic(finalKeywords);
+      console.log(`[INFO] 키워드 그룹화 완료: ${finalKeywords.length}개 그룹 생성`);
+      
+      // 그룹화 결과 반환 (모든 케이스에서 동일한 형식)
+      return res.json({
+        success: true,
+        message: `키워드 그룹화 완료: ${finalKeywords.length}개 그룹 생성`,
+        finalKeywords,
+      });
+    } else {
+      return res.json({
+        success: true,
+        message: "그룹화된 키워드가 없습니다.",
+        finalKeywords: [],
+      });
+    }
   } catch (err) {
     console.error("[ERROR] groupKeywordsHandler:", err);
     return res.status(500).json({ success: false, message: err.message });
@@ -271,27 +333,112 @@ export async function groupKeywordsHandler(req, res) {
 }
 
 /**
+ * (로직 전용) 모든 그룹화된 키워드들을 keyword_relations 테이블에 저장하는 함수
+ * 단일 키워드 그룹도 포함하여 저장
+ */
+export async function saveAllKeywordGroupsLogic(finalKeywords) {
+  // finalKeywords 순회 - 각 그룹마다 처리
+  for (const group of finalKeywords) {
+    if (!group.combinedKeyword) continue;
+
+    // 쉼표(,)로 분리 - 이 키워드들은 검색 결과가 유사하므로 같은 그룹
+    const splitted = group.combinedKeyword
+      .split(",")
+      .map((kw) => kw.trim())
+      .filter((kw) => kw.length > 0);
+      
+    // 빈 그룹이면 스킵
+    if (splitted.length === 0) continue;
+
+    // Keyword 테이블에서 검색/생성 -> keywordIds
+    let keywordIds = [];
+    for (const kw of splitted) {
+      let keywordRecord = await Keyword.findOne({ where: { keyword: kw } });
+      if (!keywordRecord) {
+        keywordRecord = await Keyword.create({ keyword: kw });
+      }
+      keywordIds.push(keywordRecord.id);
+    }
+    
+    // 단일 키워드 그룹은 그냥 키워드 테이블에만 저장
+    if (splitted.length < 2) {
+      console.log(`[INFO] 단일 키워드 그룹: ${group.combinedKeyword} (DB에 저장됨)`);
+      continue;
+    }
+
+    // 2개 이상 키워드 그룹은 keyword_relations 테이블에 저장
+    // 각 키워드가 관련이 있는지 확인
+    const columns = [];
+    const placeholders = [];
+    const values = [];
+    
+    // 최대 3개 키워드만 저장 (테이블 설계에 맞춤)
+    for (let i = 0; i < keywordIds.length && i < 3; i++) {
+      columns.push(`related_keyword_id_${i + 1}`);
+      placeholders.push('?');
+      values.push(keywordIds[i]);
+    }
+    
+    // 이미 동일한 키워드 조합이 저장되어 있는지 확인
+    const checkQuery = `
+      SELECT id FROM keyword_relations 
+      WHERE related_keyword_id_1 = ? 
+      AND (
+        related_keyword_id_2 = ? OR related_keyword_id_2 IS NULL
+      ) AND (
+        related_keyword_id_3 = ? OR related_keyword_id_3 IS NULL
+      )
+    `;
+    
+    const checkValues = [
+      keywordIds[0] || null,
+      keywordIds[1] || null,
+      keywordIds[2] || null
+    ];
+    
+    const [existingRows] = await sequelize.query(checkQuery, { 
+      replacements: checkValues 
+    });
+    
+    if (existingRows && existingRows.length > 0) {
+      console.log(`[INFO] 키워드 관계가 이미 존재합니다: ${group.combinedKeyword}`);
+      continue;
+    }
+    
+    // 새로운 관계 저장
+    const insertQuery = `
+      INSERT INTO keyword_relations (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+    `;
+    
+    await sequelize.query(insertQuery, { replacements: values });
+    console.log(`[INFO] 키워드 관계 저장 완료: ${group.combinedKeyword}`);
+  }
+}
+
+
+/**
  * (로직 전용) 그룹화된 키워드들을 keyword_relations 테이블에 저장하는 함수
  *  - finalKeywords: [
  *      {
- *        "combinedKeyword": "사당역맛집, 사당맛집",
+ *        "combinedKeyword": "사당역맛집, 사당맛집", // 그룹화된 키워드들 (검색 결과가 유사한 키워드들)
  *        "details": [ { "rank":1,"monthlySearchVolume":87900 }, ... ]
  *      },
  *      ...
  *    ]
  */
 export async function saveGroupedKeywordsLogic(finalKeywords) {
-  // finalKeywords 순회
+  // finalKeywords 순회 - 각 그룹마다 처리
   for (const group of finalKeywords) {
     if (!group.combinedKeyword) continue;
 
-    // 쉼표(,)로 분리
+    // 쉼표(,)로 분리 - 이 키워드들은 검색 결과가 유사하므로 같은 그룹
     const splitted = group.combinedKeyword
       .split(",")
       .map((kw) => kw.trim())
       .filter((kw) => kw.length > 0);
 
-    // (1) 2개 이상 묶인 경우에만 relations 테이블에 저장
+    // (1) 2개 이상 묶인 경우에만 relations 테이블에 저장 (그룹이 형성된 경우만 의미있음)
     if (splitted.length < 2) {
       console.log(`[INFO] Skip single keyword: ${group.combinedKeyword}`);
       continue;
@@ -307,102 +454,53 @@ export async function saveGroupedKeywordsLogic(finalKeywords) {
       keywordIds.push(keywordRecord.id);
     }
 
-    // (3) 기존 keyword_relations 중에서
-    //     related_keyword_id_1.._10 중 하나라도 keywordIds를 포함한 row가 있는지 찾음
-    // -------------------------------------------------------------
-    // (A) 여기를 **Named parameter**로 수정
-    // -------------------------------------------------------------
-    const orConditions = [];
-    for (let i = 1; i <= 3; i++) {
-      // "related_keyword_id_1 IN (:keywordIds) OR related_keyword_id_2 IN (:keywordIds) ..."
-      orConditions.push(`related_keyword_id_${i} IN (:keywordIds)`);
+    // (3) 새 row 생성 - 그룹화된 키워드들 간의 관계를 저장
+    // 각 키워드가 관련이 있는지 확인
+    const columns = [];
+    const placeholders = [];
+    const values = [];
+    
+    // 최대 3개 키워드만 저장 (테이블 설계에 맞춤)
+    for (let i = 0; i < keywordIds.length && i < 3; i++) {
+      columns.push(`related_keyword_id_${i + 1}`);
+      placeholders.push('?');
+      values.push(keywordIds[i]);
     }
-    const whereClause = orConditions.join(" OR ");
-
-    const [existingRows] = await sequelize.query(
-      `
-        SELECT *
-        FROM keyword_relations
-        WHERE ${whereClause}
-      `,
-      {
-        // <-- named parameter :keywordIds 에 keywordIds 배열을 그대로 매핑
-        replacements: { keywordIds },
-      }
-    );
-
-    // (4) 만약 기존 row가 있으면 -> 중복되지 않은 나머지를 추가 업데이트
+    
+    // 이미 동일한 키워드 조합이 저장되어 있는지 확인
+    const checkQuery = `
+      SELECT id FROM keyword_relations 
+      WHERE related_keyword_id_1 = ? 
+      AND (
+        related_keyword_id_2 = ? OR related_keyword_id_2 IS NULL
+      ) AND (
+        related_keyword_id_3 = ? OR related_keyword_id_3 IS NULL
+      )
+    `;
+    
+    const checkValues = [
+      keywordIds[0] || null,
+      keywordIds[1] || null,
+      keywordIds[2] || null
+    ];
+    
+    const [existingRows] = await sequelize.query(checkQuery, { 
+      replacements: checkValues 
+    });
+    
     if (existingRows && existingRows.length > 0) {
-      const row = existingRows[0];
-      const rowKeywordIds = [];
-      for (let i = 1; i <= 3; i++) {
-        const colVal = row[`related_keyword_id_${i}`];
-        if (colVal) rowKeywordIds.push(colVal);
-      }
-      // 새로 들어온 keywordIds 중 row에 없는 것만 추가
-      const toAdd = keywordIds.filter((id) => !rowKeywordIds.includes(id));
-
-      if (toAdd.length > 0) {
-        let updateClauses = [];
-        let replacements = [];
-        let colIndex = 1;
-
-        // 이미 값이 들어있는 컬럼이 몇 개인지 확인
-        for (colIndex = 1; colIndex <= 3; colIndex++) {
-          if (!row[`related_keyword_id_${colIndex}`]) {
-            // 비어있으면 여기부터 채워넣는다
-            break;
-          }
-        }
-
-        // colIndex부터 toAdd를 차례대로 채우기 (10개 컬럼을 넘지 않는 선에서)
-        for (let i = 0; i < toAdd.length; i++) {
-          if (colIndex > 10) break;
-          updateClauses.push(`related_keyword_id_${colIndex} = ?`);
-          replacements.push(toAdd[i]);
-          colIndex++;
-        }
-
-        if (updateClauses.length > 0) {
-          const updateSql = `
-            UPDATE keyword_relations
-            SET ${updateClauses.join(", ")}
-            WHERE id = ?
-          `;
-          replacements.push(row.id);
-
-          await sequelize.query(updateSql, { replacements });
-          console.log(
-            `[INFO] Updated row(id=${row.id}) in keyword_relations with [${toAdd.join(",")}]`
-          );
-        }
-      } else {
-        console.log(
-          `[INFO] All keywords already exist in row(id=${row.id}), skip.`
-        );
-      }
-    } else {
-      // (5) 기존 row가 전혀 없으면 -> 새 row INSERT
-      const columns = [];
-      const placeholders2 = [];
-      const replacements2 = [];
-      for (let i = 0; i < keywordIds.length && i < 10; i++) {
-        columns.push(`related_keyword_id_${i + 1}`);
-        placeholders2.push(`?`);
-        replacements2.push(keywordIds[i]);
-      }
-      const insertSql = `
-        INSERT INTO keyword_relations (${columns.join(", ")})
-        VALUES (${placeholders2.join(", ")})
-      `;
-      await sequelize.query(insertSql, { replacements: replacements2 });
-
-      console.log(
-        `[INFO] Inserted new row in keyword_relations with keyword IDs = [${keywordIds.join(
-          ","
-        )}]`
-      );
+      console.log(`[INFO] Keyword relation already exists for group: ${group.combinedKeyword}`);
+      continue;
     }
+    
+    // 새로운 관계 저장
+    const insertQuery = `
+      INSERT INTO keyword_relations (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+    `;
+    
+    await sequelize.query(insertQuery, { replacements: values });
+    console.log(`[INFO] Saved keyword relation for group: ${group.combinedKeyword}`);
   }
 }
 
@@ -433,77 +531,104 @@ export async function saveGroupedKeywordsHandler(req, res) {
     return res.status(500).json({ success: false, message: err.message });
   }
 }
-
 /**
- * #7. 사용자가 선택한 키워드들을 user_place_keywords 테이블에 저장
  * POST /keyword/save-selected
- * body: { finalKeywords: [{ combinedKeyword, details?: ... }]}
+ * body: { keywords: ['강원막국수', '강촌역맛집', ...] }
  */
 export async function saveSelectedKeywordsHandler(req, res) {
   try {
-    const { finalKeywords } = req.body;
-    const userId = req.user?.id; // JWT 인증으로부터 가져온 유저 ID (가정)
-
-    if (!Array.isArray(finalKeywords)) {
-      return res.status(400).json({
-        success: false,
-        message: "finalKeywords 배열이 필요합니다.",
+    console.log('[INFO] 요청 데이터:', req.body);
+    
+    const { user_id, place_id, finalKeywords } = req.body;
+    
+    if (!finalKeywords || !Array.isArray(finalKeywords)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'finalKeywords 배열이 필요합니다' 
       });
     }
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "인증되지 않은 사용자입니다.",
-      });
-    }
-
-    // (1) userId 에 해당하는 place 가져오기 (1:1 가정)
-    const place = await Place.findOne({ where: { user_id: userId } });
-    if (!place) {
-      return res.status(404).json({
-        success: false,
-        message: "해당 유저에 대한 Place 정보를 찾을 수 없습니다.",
-      });
-    }
-    const placeId = place.place_id;
-
-    // (2) finalKeywords 순회 => user_place_keywords 테이블에 저장
-    for (const group of finalKeywords) {
-      if (!group.combinedKeyword || typeof group.combinedKeyword !== "string") {
-        console.log("combinedKeyword가 없거나 문자열이 아님: ", group);
+    
+    // 키워드 처리 및 저장
+    const createdIds = [];
+    for (const keywordObj of finalKeywords) {
+      // combinedKeyword 처리 개선
+      let keywordText;
+      
+      if (typeof keywordObj === 'string') {
+        keywordText = keywordObj;
+      } else if (keywordObj.text) {
+        keywordText = keywordObj.text;
+      } else if (keywordObj.keyword) {
+        keywordText = keywordObj.keyword;
+      } else if (keywordObj.combinedKeyword) {
+        // 그룹화된 키워드 형식 처리 - 콤마로 구분된 경우 첫 번째 키워드만 선택
+        const firstKeyword = keywordObj.combinedKeyword.split(',')[0].trim();
+        if (firstKeyword) {
+          keywordText = firstKeyword;
+        } else {
+          keywordText = keywordObj.combinedKeyword;
+        }
+      } else {
+        console.warn(`[WARN] 유효하지 않은 키워드 형식 건너뜀:`, keywordObj);
         continue;
       }
-
-      // 쉼표로 분리
-      const splitted = group.combinedKeyword
-        .split(",")
-        .map((kw) => kw.trim())
-        .filter((kw) => kw.length > 0);
-
-      // 각각 Keyword 테이블 확인/생성
-      const keywordRecords = [];
-      for (const kw of splitted) {
-        let keywordRecord = await Keyword.findOne({ where: { keyword: kw } });
-        if (!keywordRecord) {
-          keywordRecord = await Keyword.create({ keyword: kw });
-        }
-        keywordRecords.push(keywordRecord);
+      
+      if (typeof keywordText !== 'string' || !keywordText.trim()) {
+        console.warn(`[WARN] 유효하지 않은 키워드 문자열 건너뜀:`, keywordText);
+        continue;
       }
+      
+      console.log(`[INFO] 키워드 처리 중: ${keywordText}`);
+      
+      const [keywordRecord] = await Keyword.findOrCreate({
+        where: { keyword: keywordText },
+        defaults: { keyword: keywordText }
+      });
+      console.log(`[INFO] 저장된 키워드: "${keywordText}" (ID: ${keywordRecord.id})`);
+      createdIds.push(keywordRecord.id);
 
-      for (const record of keywordRecords) {
-        // upsert() 사용 (단, (user_id, place_id, keyword_id)에 UNIQUE KEY 있어야 중복판별 가능)
-        await UserPlaceKeyword.upsert({
-          user_id: userId,
-          place_id: placeId,
-          keyword_id: record.id,
-          platform: place.platform,
+      if (user_id && place_id) {
+        await UserPlaceKeyword.findOrCreate({
+          where: { user_id, place_id, keyword_id: keywordRecord.id },
+          defaults: { user_id, place_id, keyword_id: keywordRecord.id },
         });
       }
     }
 
-    return res.json({ success: true, message: "Selected keywords saved." });
+    console.log(`[INFO] 저장된 키워드 ID: ${createdIds.join(', ')}`);
+    // 2) 즉시 "간단 크롤링"만 수행 (목록만 DB 저장)
+    for (const id of createdIds) {
+      try {
+        const row = await Keyword.findByPk(id);
+        if (row) {
+          console.log(`[INFO] 기본 크롤링 시작: 키워드="${row.keyword}", ID=${id}`);
+          // 기본 서울시청 좌표
+          await crawlKeywordBasic(row.keyword, id, 126.9783882, 37.5666103);
+          console.log(`[INFO] 기본 크롤링 완료: 키워드="${row.keyword}", ID=${id}`);
+        }
+      } catch (crawlErr) {
+        console.error(`[ERROR] 기본 크롤링 실패 (키워드ID=${id}):`, crawlErr);
+        // 크롤링 실패해도 계속 진행
+      }
+    }
+
+    // 3) **디테일 크롤링**은 "지금 바로" 하지 않고, Queue 에 job 등록 (Redis Bull)
+    try {
+      for (const id of createdIds) {
+        await detailQueue.add({ keywordId: id });
+        console.log(`[INFO] 디테일 크롤링 작업(키워드ID=${id})을 큐에 추가`);
+      }
+    } catch (queueErr) {
+      console.error('[ERROR] 큐 추가 실패:', queueErr);
+      // 큐 추가 실패해도 API는 성공으로 응답
+    }
+
+    return res.json({ success: true, message: `${createdIds.length}개 키워드가 저장되었습니다.` });
   } catch (err) {
-    console.error("[ERROR] saveSelectedKeywordsHandler:", err);
-    return res.status(500).json({ success: false, message: err.message });
+    console.error('[ERROR] saveSelectedKeywordsHandler:', err);
+    return res.status(500).json({ 
+      success: false, 
+      message: err.message 
+    });
   }
 }

@@ -3,43 +3,25 @@ import sequelize from '../config/db.js';
 
 const UserPlaceKeyword = sequelize.define('UserPlaceKeyword', {
   id: {
-    type: DataTypes.BIGINT.UNSIGNED,
-    autoIncrement: true,
+    type: DataTypes.INTEGER,
     primaryKey: true,
+    autoIncrement: true
   },
   user_id: {
-    type: DataTypes.BIGINT.UNSIGNED,
-    allowNull: false,
+    type: DataTypes.INTEGER,
+    allowNull: false
   },
   place_id: {
-    type: DataTypes.BIGINT.UNSIGNED,
-    allowNull: false,
+    type: DataTypes.STRING,
+    allowNull: false
   },
   keyword_id: {
-    type: DataTypes.BIGINT.UNSIGNED,
-    allowNull: false,
-  },
-  platform: {
-    type: DataTypes.STRING(20),
-    allowNull: false,
-  },
-  created_at: {
-    type: DataTypes.DATE,
-    defaultValue: DataTypes.NOW,
-  },
-  updated_at: {
-    type: DataTypes.DATE,
-    defaultValue: DataTypes.NOW,
-  },
+    type: DataTypes.INTEGER,
+    allowNull: false
+  }
 }, {
-  tableName: 'user_place_keywords',
-  timestamps: false,
-  indexes: [
-    {
-      unique: true,
-      fields: ['user_id', 'place_id', 'keyword_id'],
-    },
-  ],
+  timestamps: false,  // 타임스탬프 비활성화
+  tableName: 'user_place_keywords'
 });
 
 export default UserPlaceKeyword;
