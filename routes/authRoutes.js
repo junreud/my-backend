@@ -4,6 +4,9 @@ import express from 'express';
 import passport from 'passport';
 import authController from '../controllers/authController.js'; // default import
 import { issueTokens } from '../controllers/authController.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('AuthRoutes');
 
 //TODO : https 변경 시 secure: true로 변경
 const router = express.Router();

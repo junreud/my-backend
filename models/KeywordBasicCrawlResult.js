@@ -1,7 +1,7 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../config/db.js';
 
-const KeywordCrawlResult = sequelize.define('KeywordCrawlResult', {
+const KeywordBasicCrawlResult = sequelize.define('KeywordBasicCrawlResult', {
   id: {
     type: DataTypes.BIGINT.UNSIGNED,
     autoIncrement: true,
@@ -27,20 +27,8 @@ const KeywordCrawlResult = sequelize.define('KeywordCrawlResult', {
     type: DataTypes.STRING(100),
     allowNull: true,
   },
-  blog_review_count: {
-    type: DataTypes.INTEGER,
-    allowNull: true,
-  },
-  receipt_review_count: {
-    type: DataTypes.INTEGER,
-    allowNull: true,
-  },
   savedCount: {
     type: DataTypes.INTEGER,
-    allowNull: true,
-  },
-  keywordList: {
-    type: DataTypes.STRING(255),
     allowNull: true,
   },
   created_at: {
@@ -52,8 +40,8 @@ const KeywordCrawlResult = sequelize.define('KeywordCrawlResult', {
     defaultValue: DataTypes.NOW,
   },
 }, {
-  tableName: 'keyword_crawl_results',
+  tableName: 'keyword_basic_crawl_results',
   timestamps: false,
 });
 
-export default KeywordCrawlResult;
+export default KeywordBasicCrawlResult;

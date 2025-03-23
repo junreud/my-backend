@@ -6,6 +6,9 @@ import User from '../models/User.js';
 import { redisClient } from '../config/redisClient.js';
 import { sendVerificationCode } from '../services/emailService.js';
 import bcrypt from 'bcrypt';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('AuthController');
 
 // TODO: coolsms 모듈을 사용하여 문자 메시지 전송 마무리
 // ------------------------------------------------------------

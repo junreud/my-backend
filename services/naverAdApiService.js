@@ -4,6 +4,9 @@ import axios from 'axios';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('NaverAdApiService');
 
 const API_KEY = process.env.NAVER_AD_API_KEY || '';
 const SECRET_KEY = process.env.NAVER_AD_API_SECRET || '';
@@ -75,7 +78,7 @@ async function fetchKeywordToolSlice(sliceKeywords) {
       };
     });
   } catch (err) {
-    console.error('[ERROR] fetchKeywordToolSlice:', err.response?.data || err.message);
+    logger.error('[ERROR] fetchKeywordToolSlice:', err.response?.data || err.message);
     return [];
   }
 }
@@ -93,11 +96,11 @@ async function fetchKeywordToolSlice(sliceKeywords) {
  */
 export async function getSearchVolumes(keywords = []) {
   if (!API_KEY || !SECRET_KEY || !CUSTOMER_ID) {
-    console.error('[ERROR] NaverAdApi: missing environment variables');
+    logger.error('[ERROR] NaverAdApi: missing environment variables');
     return [];
   }
   if (!keywords.length) {
-    console.warn('[WARN] No keywords provided');
+    logger.warn('[WARN] No keywords provided');
     return [];
   }
 
@@ -110,7 +113,7 @@ export async function getSearchVolumes(keywords = []) {
   // 2) 키워드를 5개 단위로 잘라서 순차 호출
   for (let i = 0; i < uniqueKeywords.length; i += chunkSize) {
     const slice = uniqueKeywords.slice(i, i + chunkSize);
-    console.log('Calling fetchKeywordToolSlice with:', slice); // 디버그
+    logger.info('Calling fetchKeywordToolSlice with:', slice); // 디버그
 
     const partial = await fetchKeywordToolSlice(slice);
     mergedResults.push(...partial);
@@ -177,12 +180,12 @@ function runTest() {
       "사당역하체운동헬스장",
       "사당역하체운동헬스장", // 중복 예시
     ];
-    console.log('[TEST] getSearchVolumes =>', sampleKeywords);
+    logger.info('[TEST] getSearchVolumes =>', sampleKeywords);
 
     const results = await getSearchVolumes(sampleKeywords);
-    console.log('\n=== Final Result ===');
+    logger.info('\n=== Final Result ===');
     results.forEach(r => {
-      console.log(`${r.rank}등 | "${r.keyword}" => volume=${r.monthlySearchVolume}`);
+      logger.info(`${r.rank}등 | "${r.keyword}" => volume=${r.monthlySearchVolume}`);
     });
   })();
 }

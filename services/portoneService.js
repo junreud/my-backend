@@ -1,6 +1,9 @@
 // services/portoneService.js (ESM 버전)
 import axios from 'axios';
 import 'dotenv/config';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('PortoneService');
 
 const PORTONE_API_SECRET = process.env.PORTONE_API_SECRET;
 const PORTONE_API_BASE_URL = 'https://api.portone.io';
@@ -19,7 +22,7 @@ export async function createIdentityVerification(createPayload) {
     );
     return response.data;
   } catch (error) {
-    console.error(
+    logger.error(
       'PortOne Create IdentityVerification Error:',
       error.response?.data || error.message
     );
@@ -36,7 +39,7 @@ export async function getIdentityVerification(identityVerificationId) {
     );
     return response.data;
   } catch (error) {
-    console.error(
+    logger.error(
       'PortOne Identity Verification GET Error:',
       error.response?.data || error.message
     );
@@ -54,7 +57,7 @@ export async function sendIdentityVerification(identityVerificationId, sendPaylo
     );
     return response.data;
   } catch (error) {
-    console.error(
+    logger.error(
       'PortOne Identity Verification Send Error:',
       error.response?.data || error.message
     );
@@ -72,7 +75,7 @@ export async function confirmIdentityVerification(identityVerificationId, confir
     );
     return response.data;
   } catch (error) {
-    console.error(
+    logger.error(
       'PortOne Identity Verification Confirm Error:',
       error.response?.data || error.message
     );
@@ -90,7 +93,7 @@ export async function resendIdentityVerification(identityVerificationId, storeId
     const response = await axios.post(url, {}, { headers: getAuthHeader() });
     return response.data;
   } catch (error) {
-    console.error(
+    logger.error(
       'PortOne Identity Verification Resend Error:',
       error.response?.data || error.message
     );

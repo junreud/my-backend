@@ -6,8 +6,11 @@ import passport from "passport";
 import  User  from "../models/User.js"; 
 import Place  from "../models/Place.js";
 import Keyword  from "../models/Keyword.js";
-import KeywordCrawlResult  from "../models/KeywordCrawlResult.js";
+import KeywordCrawlResult  from "../models/KeywordBasicCrawlResult.js";
 import UserPlaceKeyword  from "../models/UserPlaceKeyword.js";
+import { Op } from "sequelize"; // Add this import for Op.between
+import { createLogger } from "../lib/logger.js";
+const logger = createLogger("UserRoutesLogger");
 const router = express.Router();
 const authenticateJWT = passport.authenticate('jwt', { session: false });
 
@@ -54,7 +57,7 @@ router.get(
         })),
       })
     } catch (err) {
-      console.error("[ERROR] GET /api/user/me:", err);
+      logger.error("[ERROR] GET /api/user/me:", err);
       return res.status(500).json({ message: "Server Error" });
     }
   }
@@ -83,7 +86,7 @@ router.patch(
         message: "Registration completed (url_registration = 1)."
       });
     } catch (err) {
-      console.error("[ERROR] PATCH /api/users/complete-registration:", err);
+      logger.error("[ERROR] PATCH /api/users/complete-registration:", err);
       return res.status(500).json({ success: false, error: err.message });
     }
   }
@@ -91,36 +94,10 @@ router.patch(
 
 
 /**
- * GET /api/keywords - 키워드 조회
- * 키워드 이름으로 검색
- */
-router.get("/", passport.authenticate, async (req, res) => {
-  try {
-    const { name } = req.query;
-    if (!name) {
-      return res.status(400).json({ message: "Keyword name is required" });
-    }
-
-    const keyword = await Keyword.findOne({ 
-      where: { name }
-    });
-
-    if (!keyword) {
-      return res.status(404).json({ message: "Keyword not found" });
-    }
-
-    return res.json(keyword);
-  } catch (err) {
-    console.error("[ERROR] GET /api/keywords:", err);
-    return res.status(500).json({ message: "Server Error" });
-  }
-});
-
-/**
  * GET /api/keyword-results - 키워드 결과 조회
  * placeId와 keywordId로 검색하여 결과 반환
  */
-router.get("/keyword-results", passport.authenticate, async (req, res) => {
+router.get("/keyword-results", authenticateJWT, async (req, res) => {
   try {
     const { placeId, keywordId, category, recordId, historical, fromDate, toDate } = req.query;
     
@@ -158,7 +135,7 @@ router.get("/keyword-results", passport.authenticate, async (req, res) => {
 
     return res.json(results);
   } catch (err) {
-    console.error("[ERROR] GET /api/keyword-results:", err);
+    logger.error("[ERROR] GET /api/keyword-results:", err);
     return res.status(500).json({ message: "Server Error" });
   }
 });
@@ -167,7 +144,7 @@ router.get("/keyword-results", passport.authenticate, async (req, res) => {
  * GET /api/user-keywords - 사용자별 업체 키워드 목록 조회
  * userId와 placeId로 조회
  */
-router.get("/user-keywords", passport.authenticate, async (req, res) => {
+router.get("/user-keywords", authenticateJWT, async (req, res) => {
   try {
     const { userId, placeId } = req.query;
     
@@ -180,19 +157,36 @@ router.get("/user-keywords", passport.authenticate, async (req, res) => {
       return res.status(403).json({ message: "Forbidden: Cannot access other user's keywords" });
     }
 
-    // 유저-업체별 키워드 조회
+    // 유저-업체별 키워드 조회 - 연관 관계가 없으므로 별도 쿼리로 처리
     const userKeywords = await UserPlaceKeyword.findAll({
       where: {
         user_id: userId,
         place_id: placeId
-      },
-      include: [
-        {
-          model: Keyword,
-          attributes: ['id', 'name']
-        }
-      ]
+      }
     });
+
+    // 키워드 ID 목록 추출
+    const keywordIds = userKeywords.map(uk => uk.keyword_id);
+    
+    // 키워드 목록 별도 조회
+    const keywords = await Keyword.findAll({
+      where: {
+        id: {
+          [Op.in]: keywordIds
+        }
+      },
+      // 필요하다면 확인하려는 칼럼들 명시 (예: ["id", "name"] )
+      attributes: ["id", "keyword"]
+    });
+
+    // 키워드 ID를 키로 하는 맵 생성
+    const keywordMap = {};
+    keywords.forEach(k => {
+      keywordMap[k.id] = k;
+    });
+
+    logger.debug("[user-keywords] userKeywords:", userKeywords);
+    logger.debug("[user-keywords] keywordIds:", keywordIds);
 
     // 응답 형식 가공
     const formattedKeywords = userKeywords.map(uk => ({
@@ -200,17 +194,18 @@ router.get("/user-keywords", passport.authenticate, async (req, res) => {
       user_id: uk.user_id,
       place_id: uk.place_id,
       keyword_id: uk.keyword_id,
-      name: uk.keyword.name,
+      keyword: keywordMap[uk.keyword_id]?.keyword,
       created_at: uk.created_at,
       updated_at: uk.updated_at
     }));
 
+    logger.debug("[user-keywords] formattedKeywords:", formattedKeywords);
+
     return res.json(formattedKeywords);
   } catch (err) {
-    console.error("[ERROR] GET /api/user-keywords:", err);
+    logger.error("[ERROR] GET /api/user-keywords:", err);
     return res.status(500).json({ message: "Server Error" });
   }
 });
 
 export default router;
-

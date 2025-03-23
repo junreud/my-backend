@@ -1,5 +1,8 @@
 // services/normalizePlaceUrl.js
 import puppeteer from 'puppeteer';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('NormalizePlaceUrl');
 
 /**
  * 축소형 URL(naver.me)을 해제하여 최종 URL을 반환
@@ -13,7 +16,7 @@ async function resolveShortUrl(url) {
     await page.goto(url, { waitUntil: 'networkidle2' });
     return page.url();
   } catch (err) {
-    console.error('[ERROR] resolveShortUrl:', err);
+    logger.error('[ERROR] resolveShortUrl:', err);
     return url;
   } finally {
     if (browser) await browser.close();
@@ -60,7 +63,7 @@ async function getUrlFromAnchor(normalizedUrl) {
 
     if (!finalHref) {
       // 만약 못 찾았다면 그냥 현재 page.url() 반환
-      console.warn('[WARN] 홈 탭 A 태그를 찾지 못했습니다. 현재 URL 반환.');
+      logger.warn('[WARN] 홈 탭 A 태그를 찾지 못했습니다. 현재 URL 반환.');
       return page.url();
     }
 
@@ -73,7 +76,7 @@ async function getUrlFromAnchor(normalizedUrl) {
     // 혹시 href가 절대 URL이면 그대로 반환
     return finalHref;
   } catch (err) {
-    console.error('[ERROR] getUrlFromAnchor:', err);
+    logger.error('[ERROR] getUrlFromAnchor:', err);
     return normalizedUrl;
   } finally {
     await browser.close();
@@ -101,7 +104,7 @@ export async function normalizePlaceUrl(inputUrl) {
   //    예: /place/12345678/, /restaurant/12345678/, /cafe/12345678/ ...
   const match = resolvedUrl.match(/(?:place\/|restaurant\/|cafe\/|\/)(\d+)(?:\/|$|\?)/);
   if (!match) {
-    console.error('[ERROR] URL에서 place ID 추출 실패:', resolvedUrl);
+    logger.error('[ERROR] URL에서 place ID 추출 실패:', resolvedUrl);
     return null;
   }
   const placeId = match[1];
@@ -111,7 +114,7 @@ export async function normalizePlaceUrl(inputUrl) {
 
   // 4) 실제 DOM의 <a href="/restaurant/{placeId}/home">를 추출
   const finalUrl = await getUrlFromAnchor(normalizedUrl);
-  console.log('[INFO] 최종 URL:', finalUrl);
+  logger.info('[INFO] 최종 URL:', finalUrl);
 
   return finalUrl;
 }

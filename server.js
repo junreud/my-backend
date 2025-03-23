@@ -12,6 +12,7 @@ import keywordRoutes from "./routes/keywordRoutes.js"
 import userRoutes from "./routes/userRoutes.js"
 import placeRoutes from "./routes/placeRoutes.js"
 import { connectRedis } from "./config/redisClient.js"
+import { startScheduler } from './services/schedulerService.js'
 
 // (1) HTTPS 인증서 읽기
 const key = fs.readFileSync("./localhost+2-key.pem")
@@ -53,6 +54,8 @@ await connectRedis()
 // DB 연결 후 서버 구동
 await sequelize.sync()
 console.log("DB sync OK")
+// 서버 시작 시 스케줄러 초기화
+startScheduler()
 
 // (3) HTTPS 서버 시작
 server.listen(4000, () => {

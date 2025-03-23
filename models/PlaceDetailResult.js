@@ -1,29 +1,32 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../config/db.js';
 
-const Keyword = sequelize.define('Keyword', {
+const PlaceDetailResult = sequelize.define('PlaceDetailResult', {
   id: {
     type: DataTypes.BIGINT.UNSIGNED,
     autoIncrement: true,
     primaryKey: true,
   },
-  keyword: {
-    type: DataTypes.STRING(200),
+  place_id: {
+    type: DataTypes.BIGINT.UNSIGNED,
     allowNull: false,
-    unique: true,
   },
-  basic_last_crawled_date: {
-    type: DataTypes.DATE,
-    allowNull: true,
-  },
-  last_search_volume: {
+  blog_review_count: {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
-  isRestaurant: {
-    type: DataTypes.BOOLEAN,
+  receipt_review_count: {
+    type: DataTypes.INTEGER,
     allowNull: true,
   },
+  keywordList: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+  },
+  last_crawled_at: { 
+    type: DataTypes.DATE,
+    allowNull: true,
+  }, 
   created_at: {
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW,
@@ -33,8 +36,8 @@ const Keyword = sequelize.define('Keyword', {
     defaultValue: DataTypes.NOW,
   },
 }, {
-  tableName: 'keywords',
+  tableName: 'place_detail_results',
   timestamps: false,
 });
 
-export default Keyword;
+export default PlaceDetailResult;

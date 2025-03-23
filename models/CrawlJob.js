@@ -1,27 +1,30 @@
 import { DataTypes } from 'sequelize';
 import sequelize from '../config/db.js';
 
-const Keyword = sequelize.define('Keyword', {
+const CrawlJob = sequelize.define('CrawlJob', {
   id: {
     type: DataTypes.BIGINT.UNSIGNED,
     autoIncrement: true,
     primaryKey: true,
   },
-  keyword: {
-    type: DataTypes.STRING(200),
+  start_date: {
+    type: DataTypes.DATE,
     allowNull: false,
-    unique: true,
   },
-  basic_last_crawled_date: {
+  end_date: {
     type: DataTypes.DATE,
     allowNull: true,
   },
-  last_search_volume: {
-    type: DataTypes.INTEGER,
-    allowNull: true,
+  status: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
   },
-  isRestaurant: {
+  is_completed: {
     type: DataTypes.BOOLEAN,
+    defaultValue: false,
+  },
+  error_message: {
+    type: DataTypes.TEXT,
     allowNull: true,
   },
   created_at: {
@@ -33,8 +36,8 @@ const Keyword = sequelize.define('Keyword', {
     defaultValue: DataTypes.NOW,
   },
 }, {
-  tableName: 'keywords',
+  tableName: 'crawl_jobs',
   timestamps: false,
 });
 
-export default Keyword;
+export default CrawlJob;

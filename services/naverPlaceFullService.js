@@ -3,6 +3,9 @@
 import axios from "axios";
 import puppeteer from "puppeteer";
 import HttpsProxyAgent from "https-proxy-agent";
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('NaverPlaceService');
 
 // (★) Import from the new crawler.js
 //     loadMobileUAandCookies => load matching UA + cookies
@@ -50,14 +53,14 @@ async function getPlaceDetailWithAxios(placeUrl) {
     let ua, cookieStr;
     // 모바일 UA/쿠키
     ({ ua, cookieStr } = loadMobileUAandCookies());
-    console.log('[INFO] 모바일 UA 선택:', ua);
+    logger.info('[INFO] 모바일 UA 선택:', ua);
 
 
     // Proxy?
     let agent = null;
     if (PROXY_SERVER && PROXY_SERVER.trim() !== "") {
       agent = new HttpsProxyAgent(PROXY_SERVER);
-      console.log("[INFO] Using proxy for Axios:", PROXY_SERVER);
+      logger.info("[INFO] Using proxy for Axios:", PROXY_SERVER);
     }
 
     // Use the chosen UA + cookie
@@ -78,7 +81,7 @@ async function getPlaceDetailWithAxios(placeUrl) {
     // window.__APOLLO_STATE__ 추출
     const match = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\});/);
     if (!match) {
-      console.warn("[WARN] getPlaceDetailWithAxios - __APOLLO_STATE__ not found");
+      logger.warn("[WARN] getPlaceDetailWithAxios - __APOLLO_STATE__ not found");
       return {
         placeId: null,
         name: null,
@@ -110,7 +113,7 @@ async function getPlaceDetailWithAxios(placeUrl) {
       y
     };
   } catch (err) {
-    console.error("[ERROR] getPlaceDetailWithAxios:", err.message);
+    logger.error("[ERROR] getPlaceDetailWithAxios:", err.message);
     return {
       placeId: null,
       name: null,
@@ -201,7 +204,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
     let ua, cookieStr;
     // 모바일 UA/쿠키
     ({ ua, cookieStr } = loadMobileUAandCookies());
-    console.log('[INFO] 모바일 UA 선택:', ua);
+    logger.info('[INFO] 모바일 UA 선택:', ua);
 
 
     // 브라우저 실행 옵션
@@ -212,7 +215,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
     // 프록시 설정 (옵션)
     if (PROXY_SERVER && PROXY_SERVER.trim() !== "") {
       launchOptions.args = [`--proxy-server=${PROXY_SERVER}`];
-      console.log("[INFO] Puppeteer using proxy:", PROXY_SERVER);
+      logger.info("[INFO] Puppeteer using proxy:", PROXY_SERVER);
     }
 
     browser = await puppeteer.launch(launchOptions);
@@ -220,7 +223,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
 
     // User-Agent 지정
     await page.setUserAgent(ua);
-    console.log(`[INFO] Puppeteer UA => ${ua}`);
+    logger.info(`[INFO] Puppeteer UA => ${ua}`);
 
     // Convert cookieStr -> Puppeteer cookies
     const cookieArr = cookieStr.split("; ").map((pair) => {
@@ -245,7 +248,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
 
     // 현재 페이지 (네이버가 리다이렉트 시킨 최종 URL)
     const finalMainUrl = page.url();
-    console.log("[INFO] finalMainUrl =>", finalMainUrl);
+    logger.info("[INFO] finalMainUrl =>", finalMainUrl);
 
     // "새로오픈" 요소가 있는지 확인
     const isNewlyOpened = (await page.$("span.h69bs.DjPAB")) !== null;
@@ -257,7 +260,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
       /\/(home|about|map|review.*|information|menu).*$/,
       ""
     );
-    console.log("[INFO] baseUrl =>", baseUrl);
+    logger.info("[INFO] baseUrl =>", baseUrl);
 
     // 블로그 리뷰 페이지 이동
     const reviewUrl = `${baseUrl}/review/ugc?type=photoView`;
@@ -268,7 +271,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
     try {
       await page.waitForSelector(reviewSelector, { timeout: 5000 });
     } catch (e) {
-      console.warn("[WARN] 블로그 리뷰 셀렉터 대기 실패:", e.message);
+      logger.warn("[WARN] 블로그 리뷰 셀렉터 대기 실패:", e.message);
     }
 
     // 최대 10개 리뷰 제목 추출
@@ -288,7 +291,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
     try {
       await page.waitForSelector(introSelector, { timeout: 5000 });
     } catch (e) {
-      console.warn("[WARN] 업체 소개글 셀렉터 대기 실패:", e.message);
+      logger.warn("[WARN] 업체 소개글 셀렉터 대기 실패:", e.message);
     }
 
     // 업체 소개글 추출
@@ -304,7 +307,7 @@ async function getReviewAndIntroWithPuppeteer(placeUrl) {
       isNewlyOpened
     };
   } catch (err) {
-    console.error("[ERROR] getReviewAndIntroWithPuppeteer:", err);
+    logger.error("[ERROR] getReviewAndIntroWithPuppeteer:", err);
     return {
       blogReviewTitles: [],
       shopIntro: "",
@@ -332,17 +335,17 @@ function runTest() {
   (async () => {
     // e.g. "사당맛집" or "헤어샵"
     const placeUrl = "https://m.place.naver.com/place/1282116811/home";
-    console.log("[INFO] placeUrl =", placeUrl);
+    logger.info("[INFO] placeUrl =", placeUrl);
 
     // (1) 한번 raw html 받아 파일 저장 (디버그용)
     try {
-      console.log("[INFO] -- (A) axios.get() 로 raw html 받아오기...");
+      logger.info("[INFO] -- (A) axios.get() 로 raw html 받아오기...");
       // Decide if mobile or pc
     // (★) 5) PC vs 모바일 쿠키/UA를 랜덤 적용
     let ua, cookieStr;
     // 모바일 UA/쿠키
     ({ ua, cookieStr } = loadMobileUAandCookies());
-    console.log('[INFO] 모바일 UA 선택:', ua);
+    logger.info('[INFO] 모바일 UA 선택:', ua);
 
 
       const resp = await axios.get(placeUrl, {
@@ -358,16 +361,16 @@ function runTest() {
       });
       const html = resp.data;
       fs.writeFileSync("debugPlace.html", html, "utf-8");
-      console.log("[INFO] html saved to debugPlace.html");
+      logger.info("[INFO] html saved to debugPlace.html");
     } catch (err) {
-      console.error("[ERROR] Saving HTML:", err.message);
+      logger.error("[ERROR] Saving HTML:", err.message);
     }
 
     // (2) 이후 getNaverPlaceFullInfo 실행
-    console.log("[INFO] -- (B) getNaverPlaceFullInfo...");
+    logger.info("[INFO] -- (B) getNaverPlaceFullInfo...");
     const finalInfo = await getNaverPlaceFullInfo(placeUrl);
-    console.log("[INFO] Result =");
-    console.log(JSON.stringify(finalInfo, null, 2));
+    logger.info("[INFO] Result =");
+    logger.info(JSON.stringify(finalInfo, null, 2));
   })();
 }
 

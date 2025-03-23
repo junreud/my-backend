@@ -1,4 +1,7 @@
 import Place from '../models/Place.js';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('PlaceController');
 
 /**
  * Get all places associated with a user

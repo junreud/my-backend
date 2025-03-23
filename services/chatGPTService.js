@@ -1,7 +1,9 @@
 // services/chatGPTService.js
 import 'dotenv/config';
 import OpenAI from 'openai';
+import { createLogger } from '../lib/logger.js';
 
+const logger = createLogger('ChatGPTService');
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -30,11 +32,11 @@ export async function analyzePlaceWithChatGPT(placeInfo) {
 [규칙]
 1) locationKeywords:
    - 'address'에서 시/동/구/읍/면이 포함된 키워드를 추출합니다. 
-     그 후 해당 시/동/구/읍/면을 분리한 키워드도 중복 없이 추가로 추출합니다.
+     그 후 해당 시/동/구/읍/면을 분리한 키워드도 중복 없이 추가로 무조건 추출합니다.
      예) "사당동" → ["사당동", "사당"], "동작구" → ["동작구", "동작"]  
    - 'blogReviewTitles', 'shopIntro', 'category'에서 **명소, 장소, 랜드마크, 관광지, 건물명** 등의 키워드를 추출합니다.
    - **업체명**, **브랜드명**은 절대 제외합니다.
-   - 최대 **10개** 키워드까지만 추출합니다.
+   - 최대 **15개** 키워드까지만 추출합니다.
 
 2) featureKeywords:
    - 'category', 'keywordList', 'blogReviewTitles', 'shopIntro'에서 
@@ -78,7 +80,7 @@ ${JSON.stringify(placeInfo, null, 2)}
 
     // (B) ChatGPT 답변 본문
     const answer = response.choices?.[0]?.message?.content?.trim() || '';
-    console.log('ChatGPT Answer:', answer);
+    logger.info('ChatGPT Answer:', answer);
     // (C) 정규식으로 ```json ... ``` 추출
     const jsonExtractRegex = /```json([\s\S]*?)```/;
     const jsonMatch = answer.match(jsonExtractRegex);
@@ -92,34 +94,34 @@ ${JSON.stringify(placeInfo, null, 2)}
         parsed = JSON.parse(rawJson);
       } catch (parseErr) {
         console.warn('[WARN] JSON parsing failed:', parseErr.message);
-        console.warn('Raw JSON content:', rawJson);
+        logger.warn('Raw JSON content:', rawJson);
         
         // 더 강력한 후처리 시도: JSON 형식 수정 시도
         try {
           // 마지막에 누락된 괄호를 추가하는 등의 수정
           const fixedJson = rawJson.replace(/\}[\s]*$/, '}').replace(/\}[\s]*\][\s]*$/, '}]');
           parsed = JSON.parse(fixedJson);
-          console.log('[INFO] JSON fixed and parsed successfully');
+          logger.info('[INFO] JSON fixed and parsed successfully');
         } catch (fixErr) {
-          console.warn('[WARN] JSON fix attempt failed:', fixErr.message);
+          logger.warn('[WARN] JSON fix attempt failed:', fixErr.message);
           parsed = { locationKeywords: [], featureKeywords: [] };
         }
       }
     } else {
       // JSON 블록을 찾지 못한 경우, 응답 전체에서 JSON 객체 추출 시도
-      console.warn('[WARN] JSON 코드 블록을 찾을 수 없어 전체 응답에서 JSON 추출 시도');
+      logger.warn('[WARN] JSON 코드 블록을 찾을 수 없어 전체 응답에서 JSON 추출 시도');
       try {
         const jsonPattern = /\{\s*"locationKeywords"\s*:.*"featureKeywords"\s*:.*\}/s;
         const jsonCandidate = answer.match(jsonPattern);
         
         if (jsonCandidate && jsonCandidate[0]) {
           parsed = JSON.parse(jsonCandidate[0]);
-          console.log('[INFO] JSON extracted from full response');
+          logger.info('[INFO] JSON extracted from full response');
         } else {
           parsed = { locationKeywords: [], featureKeywords: [] };
         }
       } catch (err) {
-        console.warn('[WARN] JSON 추출 실패:', err.message);
+        logger.warn('[WARN] JSON 추출 실패:', err.message);
         parsed = { locationKeywords: [], featureKeywords: [] };
       }
     }
@@ -144,7 +146,7 @@ ${JSON.stringify(placeInfo, null, 2)}
     };
 
   } catch (error) {
-    console.error('[ERROR] analyzePlaceWithChatGPT:', error.message);
+    logger.error('[ERROR] analyzePlaceWithChatGPT:', error.message);
     return { locationKeywords: [], featureKeywords: [] };
   }
 }

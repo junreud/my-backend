@@ -1,5 +1,8 @@
 import 'dotenv/config';
 import AWS from 'aws-sdk';
+import { createLogger } from '../lib/logger.js';
+
+const logger = createLogger('EmailService');
 
 AWS.config.update({
   region: process.env.AWS_REGION,
@@ -81,9 +84,9 @@ export async function sendVerificationCode(toEmail, code) {
 
   try {
     await ses.sendEmail(params).promise();
-    console.log(`이메일 전송 성공: ${toEmail}`);
+    logger.info(`이메일 전송 성공: ${toEmail}`);
   } catch (error) {
-    console.error(`이메일 전송 실패: ${error}`);
+    logger.error(`이메일 전송 실패: ${error}`);
     throw error;
   }
 }

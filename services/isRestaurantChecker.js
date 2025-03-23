@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import puppeteer from "puppeteer";
 import { fileURLToPath } from "url";
+import { createLogger } from '../lib/logger.js';
 
 // (★) crawler.js에서 필요한 함수, UA+쿠키 로드, randomDelay 등 가져오기
 import {
@@ -13,6 +14,8 @@ import {
 
 // DB 모델 (Keyword) 임포트
 import Keyword from "../models/Keyword.js";
+
+const logger = createLogger('RestaurantChecker');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +32,7 @@ export async function checkIsRestaurantByDOM(keyword) {
   // (A) 이미 Keyword 테이블에 해당 키워드가 있는지 확인
   let record = await Keyword.findOne({ where: { keyword } });
   if (record) {
-    console.log(`[INFO] 이미 DB에 존재하는 키워드="${keyword}", isRestaurant=${record.isRestaurant}`);
+    logger.info(`[INFO] 이미 DB에 존재하는 키워드="${keyword}", isRestaurant=${record.isRestaurant}`);
     return record.isRestaurant ? 1 : 0; 
   }
 
@@ -37,11 +40,11 @@ export async function checkIsRestaurantByDOM(keyword) {
   let browser;
   let isRestaurantVal = 0; // 기본값 0(일반키워드)
   try {
-    console.log(`[INFO] checkIsRestaurantByDOM: 키워드="${keyword}" DB에 없으므로 직접 판별`);
+    logger.info(`[INFO] checkIsRestaurantByDOM: 키워드="${keyword}" DB에 없으므로 직접 판별`);
 
     // (1) Puppeteer UA+쿠키
     const { ua, cookieStr } = loadMobileUAandCookies();
-    console.log(`[DEBUG] UA=${ua}`);
+    logger.debug(`[DEBUG] UA=${ua}`);
 
     browser = await puppeteer.launch({
       headless: 'new',
@@ -87,7 +90,7 @@ export async function checkIsRestaurantByDOM(keyword) {
       await page.click("span.PNozS");
       await randomDelay(1, 4);
     } catch (e) {
-      console.warn("[WARN] '펼쳐서 더보기' not found:", e.message);
+      logger.warn("[WARN] '펼쳐서 더보기' not found:", e.message);
     }
 
     // (5) "사당맛집"등의 span.UPDKY 클릭
@@ -98,10 +101,10 @@ export async function checkIsRestaurantByDOM(keyword) {
         await elements[0].click();
         await randomDelay(1, 4);
       } else {
-        console.warn("[WARN] span.UPDKY not found");
+        logger.warn("[WARN] span.UPDKY not found");
       }
     } catch (e) {
-      console.warn("[WARN] span.UPDKY wait fail:", e.message);
+      logger.warn("[WARN] span.UPDKY wait fail:", e.message);
     }
 
     // (6) 목록 li.UEzoS 검사
@@ -117,19 +120,19 @@ export async function checkIsRestaurantByDOM(keyword) {
         isRestaurantVal = 1;
       }
     } catch (err) {
-      console.warn(`[WARN] li.UEzoS not found or no items: ${err.message}`);
+      logger.warn(`[WARN] li.UEzoS not found or no items: ${err.message}`);
     }
 
-    console.log(`[INFO] 파악 결과: isRestaurantVal=${isRestaurantVal}`);
+    logger.info(`[INFO] 파악 결과: isRestaurantVal=${isRestaurantVal}`);
 
     // (C) DB에 해당 키워드 저장 (새 레코드)
     record = await Keyword.create({
       keyword,
       isRestaurant: isRestaurantVal,
     });
-    console.log(`[INFO] 새 키워드 저장됨: keyword=${keyword}, isRestaurant=${isRestaurantVal}`);
+    logger.info(`[INFO] 새 키워드 저장됨: keyword=${keyword}, isRestaurant=${isRestaurantVal}`);
   } catch (err) {
-    console.error(`[ERROR] checkIsRestaurantByDOM: ${err}`);
+    logger.error(`[ERROR] checkIsRestaurantByDOM: ${err}`);
   } finally {
     if (browser) {
       await browser.close();
