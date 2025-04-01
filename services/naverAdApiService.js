@@ -134,8 +134,8 @@ export async function getSearchVolumes(keywords = []) {
     return volumeMap[kw] || { keyword: kw, monthlySearchVolume: 0 };
   });
 
-  // 5) 검색량이 50 이하인 항목은 제외
-  const filteredArr = finalArr.filter((item) => item.monthlySearchVolume && item.monthlySearchVolume > 50);
+  // 5) 검색량이 150 이하인 항목은 제외
+  const filteredArr = finalArr.filter((item) => item.monthlySearchVolume && item.monthlySearchVolume > 150);
 
   // 6) 검색량 기준 내림차순 정렬
   const sortedArr = filteredArr.sort((a, b) => b.monthlySearchVolume - a.monthlySearchVolume);

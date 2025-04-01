@@ -128,7 +128,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   (async () => {
     // 1 ~ 10까지 쿠키 생성
     const tasks = [];
-    for (let i = 1; i <= 10; i++) {
+    for (let i = 1; i <= 5; i++) {
       tasks.push(getMobileCookies("서초맛집", i));
       randomDelay(2,4);
     }

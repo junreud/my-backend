@@ -2,8 +2,7 @@
 import puppeteer from 'puppeteer';
 import { createLogger } from '../lib/logger.js';
 
-const logger = createLogger('NormalizePlaceUrl');
-
+const logger = createLogger('NormalizePlaceUrl', { service: 'data-utils' });
 /**
  * 축소형 URL(naver.me)을 해제하여 최종 URL을 반환
  * @param {string} url

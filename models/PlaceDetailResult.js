@@ -23,6 +23,10 @@ const PlaceDetailResult = sequelize.define('PlaceDetailResult', {
     type: DataTypes.STRING(255),
     allowNull: true,
   },
+  savedCount: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   last_crawled_at: { 
     type: DataTypes.DATE,
     allowNull: true,

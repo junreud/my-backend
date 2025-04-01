@@ -12,8 +12,9 @@ import UserPlaceKeyword from "../models/UserPlaceKeyword.js";
 import sequelize from "../config/db.js";
 // 추가: 크롤러 서비스 임포트
 import { crawlKeywordBasic } from "../services/crawler/basicCrawlerService.js";
-import { detailQueue, addUserSelectedKeywordJob } from "../services/crawler/keywordQueue.js";
 import { createLogger } from '../lib/logger.js';
+import { keywordQueue } from "../services/crawler/keywordQueue.js";
+
 const logger = createLogger('KeywordControllerLogger');
 /**
  * 사용자가 이미 해당 장소를 등록했는지 확인하는 함수
@@ -507,6 +508,56 @@ export async function saveGroupedKeywordsLogic(finalKeywords) {
 }
 
 /**
+ * (추가 예시) 그룹 키워드 relations 테이블 저장 로직
+ * - 기존 saveGroupedKeywordsLogic()과 유사
+ * @param {number[]} keywordIds 
+ * @param {string} combinedKeyword
+ */
+async function saveKeywordRelations(keywordIds, combinedKeyword) {
+  if (!keywordIds || keywordIds.length < 2) {
+    return; // 2개 이상이 아니라면 의미 없는 그룹
+  }
+
+  // 최대 3개 키워드만 저장
+  const columns = [];
+  const placeholders = [];
+  const values = [];
+
+  for (let i = 0; i < keywordIds.length && i < 3; i++) {
+    columns.push(`related_keyword_id_${i+1}`);
+    placeholders.push('?');
+    values.push(keywordIds[i]);
+  }
+
+  // 중복 체크
+  const checkQuery = `
+    SELECT id FROM keyword_relations 
+    WHERE related_keyword_id_1 = ?
+    AND (related_keyword_id_2 = ? OR related_keyword_id_2 IS NULL)
+    AND (related_keyword_id_3 = ? OR related_keyword_id_3 IS NULL)
+  `;
+  const [rows] = await sequelize.query(checkQuery, {
+    replacements: [
+      keywordIds[0] || null,
+      keywordIds[1] || null,
+      keywordIds[2] || null
+    ]
+  });
+  if (rows && rows.length > 0) {
+    logger.info(`[INFO] 이미 존재하는 키워드 관계: ${combinedKeyword}`);
+    return;
+  }
+
+  // 삽입
+  const insertQuery = `
+    INSERT INTO keyword_relations (${columns.join(', ')})
+    VALUES (${placeholders.join(', ')})
+  `;
+  await sequelize.query(insertQuery, { replacements: values });
+  logger.info(`[INFO] keyword_relations 저장 완료: ${combinedKeyword}`);
+}
+
+/**
  * (핸들러) 그룹화된 키워드를 keyword_relations 테이블에 저장
  * POST /keyword/save-grouped
  * body: { finalKeywords: [ { combinedKeyword: "...", details: ... }, ... ] }
@@ -536,12 +587,9 @@ export async function saveGroupedKeywordsHandler(req, res) {
 }
 
 /**
- * POST /keyword/save-selected
- * body: { keywords: ['강원막국수', '강촌역맛집', ...] }
- */
-/**
- * POST /keyword/save-selected
- * body: { keywords: ['강원막국수', '강촌역맛집', ...] }
+ * 7) 선택된 키워드 저장
+ *    POST /analysis/save-selected
+ *    body: { user_id, place_id, finalKeywords: string[] }
  */
 export async function saveSelectedKeywordsHandler(req, res) {
   try {
@@ -555,19 +603,18 @@ export async function saveSelectedKeywordsHandler(req, res) {
         message: 'finalKeywords 배열이 필요합니다' 
       });
     }
-    
-    // 키워드 처리 및 저장
+
+    // 1) 입력된 키워드를 DB(Keyword 테이블)에 저장
+    //    - 그룹화 키워드 등 처리 포함
     const createdIds = [];
-    // 그룹화된 키워드 저장용 배열
     const groupedKeywords = [];
-    
-    // [기존 코드 유지: 키워드 추출 및 Keyword 테이블 저장]
+
     for (const keywordObj of finalKeywords) {
-      // combinedKeyword 처리 개선
       let keywordText;
       let isGrouped = false;
       let groupKeywords = [];
-      
+
+      // (A) 다양한 형식의 keywordObj 처리
       if (typeof keywordObj === 'string') {
         keywordText = keywordObj;
       } else if (keywordObj.text) {
@@ -575,62 +622,50 @@ export async function saveSelectedKeywordsHandler(req, res) {
       } else if (keywordObj.keyword) {
         keywordText = keywordObj.keyword;
       } else if (keywordObj.combinedKeyword) {
-        // 그룹화된 키워드 형식 처리
-        const splitKeywords = keywordObj.combinedKeyword.split(',').map(k => k.trim()).filter(k => k);
-        
-        if (splitKeywords.length > 1) {
+        const splitArr = keywordObj.combinedKeyword
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s);
+        if (splitArr.length > 1) {
           isGrouped = true;
-          groupKeywords = splitKeywords;
-          keywordText = splitKeywords[0]; // 첫 번째 키워드 사용
-        } else if (splitKeywords.length === 1) {
-          keywordText = splitKeywords[0];
+          groupKeywords = splitArr;
+          keywordText = splitArr[0]; // 첫 번째 키워드 사용
+        } else if (splitArr.length === 1) {
+          keywordText = splitArr[0];
         } else {
           keywordText = keywordObj.combinedKeyword;
         }
       } else {
-        logger.warn(`[WARN] 유효하지 않은 키워드 형식 건너뜀:`, keywordObj);
+        logger.warn('[WARN] 유효하지 않은 키워드 형식:', keywordObj);
         continue;
       }
-      
-      if (typeof keywordText !== 'string' || !keywordText.trim()) {
-        logger.warn(`[WARN] 유효하지 않은 키워드 문자열 건너뜀:`, keywordText);
+
+      if (!keywordText || !keywordText.trim()) {
+        logger.warn('[WARN] 유효하지 않은 키워드 문자열:', keywordText);
         continue;
       }
-      
-      logger.info(`[INFO] 키워드 처리 중: ${keywordText}`);
-      
-      // 키워드 찾기 또는 생성
+
+      // (B) Keyword DB 저장 (findOrCreate)
       const [keywordRecord] = await Keyword.findOrCreate({
         where: { keyword: keywordText },
-        defaults: { keyword: keywordText }
+        defaults: { keyword: keywordText },
       });
-      
-      logger.info(`[INFO] 저장된 키워드: "${keywordText}" (ID: ${keywordRecord.id})`);
       createdIds.push(keywordRecord.id);
 
-      // [기존 코드 유지: 그룹화된 키워드 처리]
+      // (C) 그룹화 키워드 저장 로직 (2개 이상이면 relations 로직)
       if (isGrouped && groupKeywords.length > 1) {
         const keywordIds = [keywordRecord.id];
-        
-        // 첫 번째 이후의 키워드들 처리
         for (let i = 1; i < groupKeywords.length; i++) {
-          const groupKeyword = groupKeywords[i];
-          const [groupKeywordRecord] = await Keyword.findOrCreate({
-            where: { keyword: groupKeyword },
-            defaults: { keyword: groupKeyword }
+          const [gk] = await Keyword.findOrCreate({
+            where: { keyword: groupKeywords[i] },
+            defaults: { keyword: groupKeywords[i] },
           });
-          
-          keywordIds.push(groupKeywordRecord.id);
+          keywordIds.push(gk.id);
         }
-        
-        // 그룹화된 키워드 관계 저장을 위해 보관
-        groupedKeywords.push({
-          keywordIds,
-          combinedKeyword: keywordObj.combinedKeyword
-        });
+        groupedKeywords.push({ keywordIds, combinedKeyword: keywordObj.combinedKeyword });
       }
 
-      // [기존 코드 유지: UserPlaceKeyword 테이블에 연결 저장]
+      // (D) UserPlaceKeyword 테이블 연동
       if (user_id && place_id) {
         await UserPlaceKeyword.findOrCreate({
           where: { user_id, place_id, keyword_id: keywordRecord.id },
@@ -639,121 +674,81 @@ export async function saveSelectedKeywordsHandler(req, res) {
       }
     }
 
-    // [기존 코드 유지: 그룹화된 키워드 관계 저장]
-    if (groupedKeywords.length > 0) {
-      for (const group of groupedKeywords) {
-        // ... 기존 코드 그대로 유지 ...
+    // 2) 그룹화된 키워드 관계를 keyword_relations 테이블에 저장
+    //    (이미 있는 로직 재사용)
+    for (const group of groupedKeywords) {
+      try {
+        await saveKeywordRelations(group.keywordIds, group.combinedKeyword);
+      } catch (err) {
+        logger.warn(`[WARN] 그룹 키워드 relations 저장 중 에러: ${err.message}`);
       }
     }
 
-    logger.info(`[INFO] 저장된 키워드 ID: ${createdIds.join(', ')}`);
-    
-    // 날짜 기준 크롤링 결정
+    // 3) 14:00 조건에 따른 Basic 크롤링 여부 결정 -> 필요 시 수행
+    //    (needBasicCrawl = true면 crawlKeywordBasic + detailQueue 추가)
     const now = new Date();
     const today14h = new Date(now);
-    today14h.setHours(14, 0, 0, 0); // 오늘 14:00
-    
-    // [수정된 부분: Basic 크롤링 수행 여부 결정]
+    today14h.setHours(14, 0, 0, 0);
+
     for (const id of createdIds) {
       try {
         const keywordRecord = await Keyword.findByPk(id);
         if (!keywordRecord) continue;
-        
+
         const keywordName = keywordRecord.keyword;
         let needBasicCrawl = false;
-        
-        // Basic 크롤링 필요 여부 확인 (14:00 필터링 적용)
+
+        // (A) basic_last_crawled_date 체크
         if (!keywordRecord.basic_last_crawled_date) {
           needBasicCrawl = true;
         } else {
-          const lastBasicCrawl = new Date(keywordRecord.basic_last_crawled_date);
-          // 마지막 크롤링이 오늘 14시 이전이면 다시 크롤링
-          if (lastBasicCrawl < today14h && now < today14h) {
+          const lastCrawl = new Date(keywordRecord.basic_last_crawled_date);
+          // 오늘 14:00 이전 크롤링이거나 날짜 달라지면 다시 크롤링
+          if (now < today14h && lastCrawl < (today14h - 24*60*60*1000)) {
             needBasicCrawl = true;
-          } else if (lastBasicCrawl.toDateString() !== now.toDateString()) {
-            // 다른 날짜라면 크롤링 필요
+          } else if (now >= today14h && lastCrawl < today14h) {
             needBasicCrawl = true;
           }
         }
-        
-        // Basic 크롤링 수행
-        if (needBasicCrawl) {
-          logger.info(`[INFO] 기본 크롤링 시작: 키워드="${keywordName}", ID=${id}`);
-          
-          // 기본 서울시청 좌표
-          const placesData = await crawlKeywordBasic(keywordName, id, 126.9783882, 37.5666103);
-          
-          // 크롤링 후 날짜 업데이트
-          await keywordRecord.update({
-            basic_last_crawled_date: new Date()
-          });
-          
-          // 수정: 사용자 선택 키워드 상세 크롤링 작업을 우선순위 높게 큐에 추가
-          await addUserSelectedKeywordJob(id);
-          logger.info(`[INFO] 사용자 선택 키워드 "${keywordName}" 상세 크롤링 작업을 우선순위로 큐에 추가함`);
-          
-          // [새로운 코드: 크롤링한 place_id들을 place_detail_results 테이블에 저장]
-          if (placesData && placesData.items && placesData.items.length > 0) {
-            for (const item of placesData.items) {
-              // Place ID 확인
-              const placeId = parseInt(item.placeId, 10);
-              if (!placeId) continue;
-              
-              // place_detail_results 테이블에 존재 여부 확인
-              const existingPlace = await PlaceDetailResult.findOne({
-                where: { place_id: placeId }
-              });
-              
-              if (!existingPlace) {
-                // 새 장소 정보 추가
-                await PlaceDetailResult.create({
-                  place_id: placeId,
-                  // 상세 정보는 아직 없음 (detail 크롤링에서 채워짐)
-                  blog_review_count: null,
-                  receipt_review_count: null,
-                  keywordList: null,
-                  created_at: new Date()
-                });
-                logger.info(`[INFO] 새 장소 ID ${placeId}가 place_detail_results에 추가됨`);
-              } else {
-                // 이미 존재하는 장소는 건너뜀
-                logger.debug(`[DEBUG] 장소 ID ${placeId}가 이미 place_detail_results에 존재함`);
-              }
-            }
+
+          // (B) 실제 Basic 크롤링
+          if (needBasicCrawl) {
+            logger.info(`[INFO] 키워드="${keywordName}" 기본 크롤링 시작`);
             
-            // [새로운 코드: 상세 크롤링 작업 예약]
-            // 모든 장소의 상세 정보 크롤링을 위한 작업 큐에 추가
-            try {
-              await detailQueue.add({ 
-                needsDetailCrawl: true,
-                // keyword_id 대신 전체 크롤링 플래그 사용
-                crawlAllPending: true
-              });
-              logger.info(`[INFO] 상세 크롤링 작업을 큐에 추가함 (키워드 "${keywordName}" 관련)`);
-            } catch (queueErr) {
-              logger.error(`[ERROR] 상세 크롤링 큐 추가 실패: ${queueErr.message}`);
+            const items = await crawlKeywordBasic(keywordName, id);
+
+          // 반환된 항목이 있을 때만 detail 크롤링 진행 (크롤링이 실제로 수행된 경우)
+          if (items && items.length > 0) {
+            // 2) basic_last_crawled_date는 crawlKeywordBasic 내부에서 이미 업데이트되므로 생략
+
+            // 3) items에서 place_id 추출하여 detail 크롤링을 위해 큐에 등록
+            const placeIds = items
+              .filter(item => item.placeId)
+              .map(item => parseInt(item.placeId, 10));
+            
+            // 크롤링할 항목이 있으면 큐에 등록 (수정: unifiedProcess 사용)
+            if (placeIds.length > 0) {
+              await keywordQueue.add('unifiedProcess', { 
+                type: 'userDetail', 
+                data: { placeIds } 
+              }, { priority: 1 });
+              logger.info(`[INFO] keywordQueue에 userDetail 작업 등록 (keywordId=${id}, ${placeIds.length}개 place)`);
             }
           }
-          
-          logger.info(`[INFO] 기본 크롤링 완료: 키워드="${keywordName}", ID=${id}`);
         } else {
-          logger.info(`[INFO] 기본 크롤링 건너뜀: 키워드="${keywordName}", ID=${id} - 최근 크롤링됨`);
+          logger.info(`[INFO] 기본 크롤링 불필요: 키워드="${keywordName}" (이미 최신)`);
         }
       } catch (err) {
-        logger.error(`[ERROR] 키워드ID=${id} 처리 중 오류 발생:`, err);
-        // 오류가 발생해도 계속 다음 키워드 진행
+        logger.error(`[ERROR] 키워드ID=${id} 처리 중 오류: ${err.message}`);
       }
     }
 
-    return res.json({ 
-      success: true, 
-      message: `${createdIds.length}개 키워드가 저장되었습니다.` 
+    return res.json({
+      success: true,
+      message: `${createdIds.length}개 키워드가 저장되고, 필요 시 크롤링이 진행됩니다.`,
     });
   } catch (err) {
     logger.error('[ERROR] saveSelectedKeywordsHandler:', err);
-    return res.status(500).json({ 
-      success: false, 
-      message: err.message 
-    });
+    return res.status(500).json({ success: false, message: err.message });
   }
 }

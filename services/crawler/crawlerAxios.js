@@ -1,42 +1,50 @@
 // crawlerAxios.js
 import fetch from 'node-fetch';
+import { loadMobileUAandCookies } from '../../config/crawler.js';
 
 /**
  * 상세 페이지 HTML 요청
  */
-export async function fetchDetailHtml(placeId, cookieStr, userAgent, isRestaurantVal=false) {
-    const route = isRestaurantVal ? 'restaurant' : 'place';
-    const detailUrl = `https://m.place.naver.com/${route}/${placeId}/home`;
-    
-    // 타임아웃 설정 추가
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15초 타임아웃
-    
-    try {
-      const res = await fetch(detailUrl, {
-        method: 'GET',
-        headers: {
-          'Cookie': cookieStr,
-          'User-Agent': userAgent,
-        },
-        signal: controller.signal // 타임아웃 신호 추가
-      });
-      
-      clearTimeout(timeoutId); // 타임아웃 해제
-      
-      if (!res.ok) {
-        throw new Error(`Failed to fetch detail for placeId=${placeId}: ${res.status} ${res.statusText}`);
-      }
-      return await res.text();
-    } catch (err) {
-      clearTimeout(timeoutId);
-      // AbortError를 좀 더 의미있는 에러로 변환
-      if (err.name === 'AbortError') {
-        throw new Error(`Timeout: request for placeId=${placeId} took too long`);
-      }
-      throw err;
-    }
+export async function fetchDetailHtml(placeId, cookieStr = null, userAgent = null, isRestaurantVal=false) {
+  // 매개변수로 쿠키/UA가 제공되지 않으면 직접 가져오기
+  if (!cookieStr || !userAgent) {
+    const { ua, cookieStr: newCookieStr } = loadMobileUAandCookies();
+    cookieStr = newCookieStr;
+    userAgent = ua;
   }
+
+  const route = isRestaurantVal ? 'restaurant' : 'place';
+  const detailUrl = `https://m.place.naver.com/${route}/${placeId}/home`;
+  
+  // 타임아웃 설정 추가
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15초 타임아웃
+  
+  try {
+    const res = await fetch(detailUrl, {
+      method: 'GET',
+      headers: {
+        'Cookie': cookieStr,
+        'User-Agent': userAgent,
+      },
+      signal: controller.signal // 타임아웃 신호 추가
+    });
+    
+    clearTimeout(timeoutId); // 타임아웃 해제
+    
+    if (!res.ok) {
+      throw new Error(`Failed to fetch detail for placeId=${placeId}: ${res.status} ${res.statusText}`);
+    }
+    return await res.text();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    // AbortError를 좀 더 의미있는 에러로 변환
+    if (err.name === 'AbortError') {
+      throw new Error(`Timeout: request for placeId=${placeId} took too long`);
+    }
+    throw err;
+  }
+}
 
 /**
  * HTML 파싱 (방문자리뷰, 블로그리뷰, keywordList)

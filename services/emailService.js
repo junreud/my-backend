@@ -2,8 +2,7 @@ import 'dotenv/config';
 import AWS from 'aws-sdk';
 import { createLogger } from '../lib/logger.js';
 
-const logger = createLogger('EmailService');
-
+const logger = createLogger('EmailService', { service: 'notification' });
 AWS.config.update({
   region: process.env.AWS_REGION,
   credentials: new AWS.Credentials({

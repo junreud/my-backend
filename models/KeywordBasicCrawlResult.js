@@ -27,9 +27,10 @@ const KeywordBasicCrawlResult = sequelize.define('KeywordBasicCrawlResult', {
     type: DataTypes.STRING(100),
     allowNull: true,
   },
-  savedCount: {
-    type: DataTypes.INTEGER,
-    allowNull: true,
+
+  last_crawled_at: {
+    type: DataTypes.DATE,
+    allowNull: true
   },
   created_at: {
     type: DataTypes.DATE,
