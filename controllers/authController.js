@@ -117,15 +117,20 @@ export async function addInfo(req, res) {
     //    (B) refreshToken -> 쿠키
     res.cookie("refreshToken", tokens.refreshToken, {
       httpOnly: true,
-      secure: true,
+      secure: process.env.NODE_ENV === 'development', // 개발환경에서만 secure:true 필요
       sameSite: "none",
     });
 
+    // 환경에 따라 다른 리다이렉트 URL 사용
+    const baseUrl = process.env.NODE_ENV === 'development' 
+      ? 'https://localhost:3000' 
+      : 'http://lakabe.com';
+      
     //    (C) accessToken -> JSON
     return res.json({
       message: "가입 완료",
       accessToken: tokens.accessToken,
-      redirectUrl: `https://localhost:3000/oauth-redirect?accessToken=${tokens.accessToken}`,
+      redirectUrl: `${baseUrl}/oauth-redirect?accessToken=${tokens.accessToken}`,
     });
   } catch (err) {
     console.error("[ERROR] /addinfo:", err);
@@ -272,7 +277,7 @@ export async function linkAccounts(req, res) {
     res.cookie("refreshToken", tokens.refreshToken, {
       httpOnly: true,
       sameSite: "none",
-      secure: true,
+      secure: process.env.NODE_ENV === 'development', // 개발환경에서만 secure:true 필요
     });
     // json 응답으로 accessToken
     return res.json({ message: "연동+로그인 완료", accessToken: tokens.accessToken });
