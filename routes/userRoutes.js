@@ -227,143 +227,195 @@ function getCrawlDate(dateTime) {
 }
 
 /**
- * GET /api/keyword-ranking-details?userId=xxx&placeId=yyy&keyword=zzz
- * - 3개월 전부터 현재까지의 데이터를 조회
+ * GET /api/keyword-ranking-details?userId=xxx&placeId=yyy
+ * - 사용자와 업체에 연결된 모든 키워드의 3개월 데이터를 조회
  * - place_id + (14시 기준) 날짜로 Basic/Detail 데이터를 묶어 반환
  */
 router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
   try {
-    const { userId, placeId, keyword } = req.query;
+    const { userId, placeId } = req.query;
 
-    // (1) user_place_keywords에서 (user_id, place_id)에 해당하는 row 조회
-    const upk = await UserPlaceKeyword.findOne({
+    if (!userId || !placeId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "userId와 placeId는 필수 파라미터입니다." 
+      });
+    }
+
+    // (1) UserPlaceKeyword에서 해당 사용자-업체에 연결된 모든 키워드 ID 조회
+    const userPlaceKeywords = await UserPlaceKeyword.findAll({
       where: { user_id: userId, place_id: placeId }
     });
-    if (!upk) {
-      // 해당 유저-업체 매핑이 없으면 빈 배열 반환
-      return res.json([]);
+
+    if (userPlaceKeywords.length === 0) {
+      logger.info(`[keyword-ranking-details] 키워드 없음: userId=${userId}, placeId=${placeId}`);
+      return res.json({ success: true, data: [] });
     }
 
-    // (2) keywords 테이블에서 keyword 문자열로 검색
-    const kw = await Keyword.findOne({
-      where: { keyword }
+    // 키워드 ID 목록 추출
+    const keywordIds = userPlaceKeywords.map(upk => upk.keyword_id);
+    
+    // (2) 키워드 정보 조회
+    const keywords = await Keyword.findAll({
+      where: { id: { [Op.in]: keywordIds } }
     });
-    if (!kw) {
-      // 요청 keyword가 없으면 빈 배열
-      return res.json([]);
-    }
+    
+    // 키워드 ID -> 키워드 문자열 매핑 생성
+    const keywordMap = {};
+    keywords.forEach(k => {
+      keywordMap[k.id] = k.keyword;
+    });
 
-    // (2-1) user_place_keywords에 있는 keyword_id와 실제 Keyword id가 일치하는지 확인
-    // 필요 없다면 이 조건을 제거할 수 있습니다.
-    if (upk.keyword_id !== kw.id) {
-      // 매핑이 불일치하면 빈 배열
-      return res.json([]);
-    }
+    logger.debug(`[DEBUG] 총 ${keywordIds.length}개 키워드 ID 조회: ${keywordIds.join(', ')}`);
+    logger.debug(`[DEBUG] 키워드 매핑: ${JSON.stringify(keywordMap)}`);
 
     // (3) 3개월 전부터 현재까지 범위 계산
     const threeMonthsAgo = dayjs().subtract(3, "month").startOf("day").toDate();
     const now = new Date();
 
-    // (4) Basic Crawl 결과 조회 (keyword_id 동일 + updated_at이 3개월 이내)
+    // (4) 모든 키워드 ID에 대한 BasicCrawlResult 조회
     const basicResults = await KeywordBasicCrawlResult.findAll({
       where: {
-        keyword_id: kw.id,
+        keyword_id: { [Op.in]: keywordIds },
+        ranking: { [Op.not]: null },
         last_crawled_at: {
-          [Op.between]: [threeMonthsAgo, now],
-        },
+          [Op.between]: [threeMonthsAgo, now]
+        }
       },
-      order: [["updated_at", "ASC"]],
+      order: [["last_crawled_at", "DESC"], ["updated_at", "DESC"]]
     });
 
-    // (4-1) Basic 결과에서 place_id 목록 추출
-    const placeIds = [...new Set(basicResults.map((row) => row.place_id))];
+    logger.debug(`[DEBUG] 총 ${keywords.length}개 키워드에 대한 ${basicResults.length}개 데이터 조회됨`);
 
-    // (5) place_detail_results에서 place_id가 위 목록에 속하고,
-    //     last_crawled_at이 3개월 이내인 데이터만 조회
-    const detailResults = await PlaceDetailResult.findAll({
-      where: {
-        place_id: placeIds,
-        last_crawled_at: {
-          [Op.between]: [threeMonthsAgo, now],
-        },
-      },
-      order: [["last_crawled_at", "ASC"]],
-    });
+    // (5) BasicResults에서 place_id 목록 추출
+    const placeIds = [...new Set(basicResults.map(b => b.place_id))];
 
-    // (6) Basic 결과를 "place_id + (14시 기준) 날짜"로 매핑
-    const basicMap = {};
+    // 날짜별/키워드별로 가장 최신 데이터를 매핑
+    // 구조: { 날짜: { 키워드ID: { 장소ID: 데이터 } } }
+    const basicDateMap = {};
+    
     for (const b of basicResults) {
-      const pid = b.place_id;
-      const dateKey = getCrawlDate(b.updated_at);
-      if (!basicMap[pid]) {
-        basicMap[pid] = {};
+      const dateKey = getCrawlDate(b.last_crawled_at || b.updated_at);
+      if (!dateKey) continue;
+
+      if (!basicDateMap[dateKey]) {
+        basicDateMap[dateKey] = {};
       }
-      if (!basicMap[pid][dateKey]) {
-        basicMap[pid][dateKey] = [];
+      
+      if (!basicDateMap[dateKey][b.keyword_id]) {
+        basicDateMap[dateKey][b.keyword_id] = {};
       }
-      basicMap[pid][dateKey].push(b);
+
+      // 같은 날짜/키워드/장소에 대해 가장 최신 데이터만 유지
+      if (!basicDateMap[dateKey][b.keyword_id][b.place_id] || 
+          new Date(b.last_crawled_at) > new Date(basicDateMap[dateKey][b.keyword_id][b.place_id].last_crawled_at)) {
+        basicDateMap[dateKey][b.keyword_id][b.place_id] = b;
+      }
     }
 
-    // Detail 결과도 동일하게 매핑
+    // (6) PlaceDetailResult 조회 추가
+    const detailResults = await PlaceDetailResult.findAll({
+      where: {
+        place_id: { [Op.in]: placeIds },
+        last_crawled_at: { [Op.between]: [threeMonthsAgo, now] }
+      },
+      order: [["last_crawled_at", "DESC"]]
+    });
+
+    logger.debug(`[DEBUG] Detail 데이터 ${detailResults.length}개 조회됨`);
+
+    // 날짜별로 가장 최신 데이터를 매핑
     const detailMap = {};
     for (const d of detailResults) {
       const pid = d.place_id;
+      if (!detailMap[pid]) detailMap[pid] = {};
+
       const dateKey = getCrawlDate(d.last_crawled_at);
-      if (!detailMap[pid]) {
-        detailMap[pid] = {};
+      if (!dateKey) continue;
+
+      // 같은 날짜/장소에 대해 가장 최신 데이터만 유지
+      if (!detailMap[pid][dateKey] || 
+          new Date(d.last_crawled_at) > new Date(detailMap[pid][dateKey].last_crawled_at)) {
+        detailMap[pid][dateKey] = d;
       }
-      if (!detailMap[pid][dateKey]) {
-        detailMap[pid][dateKey] = [];
-      }
-      detailMap[pid][dateKey].push(d);
     }
 
-    // (7) 최종 합치기
-    // 날짜별로 basic / detail 각각 1개만 존재한다고 가정
-    // 여러 건이 있을 경우, 필요에 따라 처리 로직을 바꾸세요
+    // (7) 각 날짜별, 키워드별로 데이터 정리
     const finalData = [];
-    for (const pid of placeIds) {
-      const basicDateKeys = basicMap[pid] ? Object.keys(basicMap[pid]) : [];
-      const detailDateKeys = detailMap[pid] ? Object.keys(detailMap[pid]) : [];
-      const allDateKeys = new Set([...basicDateKeys, ...detailDateKeys]);
+    const uniqueDateKeys = [...new Set(Object.keys(basicDateMap))];
 
-      for (const dateKey of allDateKeys) {
-        const basicRows = basicMap[pid]?.[dateKey] || [];
-        const detailRows = detailMap[pid]?.[dateKey] || [];
+    // 날짜별 처리
+    for (const dateKey of uniqueDateKeys) {
+      // 해당 날짜의 모든 키워드 데이터 처리
+      const keywordsForDate = basicDateMap[dateKey];
+      
+      for (const keywordId in keywordsForDate) {
+        const placesForKeyword = keywordsForDate[keywordId];
+        const keywordString = keywordMap[keywordId] || `키워드ID:${keywordId}`;
+        
+        for (const pid in placesForKeyword) {
+          const b = placesForKeyword[pid];
 
-        // 여기서는 예시로 "각 날짜에 대해 basic 1건 + detail 1건"만 응답
-        const b = basicRows[0] || null;
-        const d = detailRows[0] || null;
+          // 같은 날짜의 detail 데이터 찾기
+          let d = detailMap[pid]?.[dateKey];
 
-        finalData.push({
-          ranking: b ? b.ranking : null,
-          place_id: pid,
-          place_name: b ? b.place_name : null,
-          category: b ? b.category : null,
-          savedCount: b ? b.savedCount : null,
-          
-          blog_review_count: d ? d.blog_review_count : null,
-          receipt_review_count: d ? d.receipt_review_count : null,
-          
-          // keywordList가 JSON 문자열인지 "키워드1,키워드2" 형태인지에 따라 처리
-          keywordList: d?.keywordList
-            ? ( // 만약 JSON 형태라면 JSON.parse, 아니면 split
-              typeof d.keywordList === "string" && d.keywordList.trim().startsWith("[")
-                ? JSON.parse(d.keywordList)
-                : d.keywordList.split(",")
-            )
-            : null,
+          // 같은 날짜의 detail이 없으면 가장 가까운 이전 날짜의 detail 찾기
+          if (!d) {
+            const allDetailDates = detailMap[pid] ? Object.keys(detailMap[pid]).sort().reverse() : [];
+            for (const detailDateKey of allDetailDates) {
+              if (detailDateKey <= dateKey) {
+                d = detailMap[pid][detailDateKey];
+                break;
+              }
+            }
+          }
 
-          // 확인용으로 날짜 키를 함께 전달 (프론트에서 필요 없다면 제거)
-          date_key: dateKey,
-        });
+          finalData.push({
+            id: `${keywordId}_${pid}_${dateKey}`,
+            keyword_id: parseInt(keywordId),
+            keyword: keywordString,
+            ranking: b.ranking,
+            place_id: parseInt(pid),
+            place_name: b.place_name,
+            category: b.category,
+            savedCount: d ? d.savedCount : null,
+            blog_review_count: d ? d.blog_review_count : null,
+            receipt_review_count: d ? d.receipt_review_count : null,
+            keywordList: d?.keywordList
+              ? (typeof d.keywordList === "string" && d.keywordList.trim().startsWith("[")
+                  ? JSON.parse(d.keywordList)
+                  : d.keywordList.split(","))
+              : null,
+            date_key: dateKey,
+          });
+        }
       }
     }
 
-    return res.json(finalData);
+    // 결과 정렬 - 날짜별로 먼저 정렬하고, 같은 날짜 내에서는 키워드별, 순위로 정렬
+    finalData.sort((a, b) => {
+      if (a.date_key !== b.date_key) {
+        return a.date_key.localeCompare(b.date_key);
+      }
+      if (a.keyword !== b.keyword) {
+        return a.keyword.localeCompare(b.keyword);
+      }
+      return (a.ranking || 999) - (b.ranking || 999);
+    });
+
+    // 로깅
+    logger.debug(`[keyword-ranking-details] 총 ${finalData.length}개 결과 반환: userId=${userId}, placeId=${placeId}, 키워드 ${keywordIds.length}개`);
+
+    return res.json({
+      success: true,
+      data: finalData
+    });
   } catch (err) {
-    logger.error(err);
-    return res.status(500).json({ error: "Internal Server Error" });
+    logger.error(`[keyword-ranking-details] 오류 발생:`, err);
+    return res.status(500).json({ 
+      success: false,
+      message: "서버 오류가 발생했습니다." 
+    });
   }
 });
 

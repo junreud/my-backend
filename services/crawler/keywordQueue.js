@@ -39,6 +39,7 @@ function shouldBasicCrawlKeyword(basicLastCrawledDate) {
     return lastCrawled < today14h;
   }
 }
+
 /* -----------------------------------------------------------------------------------
  * 큐 생성
  * ----------------------------------------------------------------------------------- */
@@ -71,6 +72,198 @@ keywordQueue.on('completed', (job) => {
 keywordQueue.on('stalled', (job) => {
   logger.warn(`[WARN][keyword-crawl-queue] 작업 멈춤(stalled): jobId=${job.id}`);
 });
+
+// 키워드 큐 마지막 활동 시간과 타이머 추적을 위한 변수
+let lastActivityTimestamp = Date.now();
+let inactivityTimer = null;
+const INACTIVITY_THRESHOLD = 6 * 60 * 1000; // 6분
+
+// 큐 활동 감지를 위한 이벤트 핸들러 추가
+keywordQueue.on('active', () => {
+  logger.debug('[DEBUG] 큐 활동 감지: 타이머 리셋');
+  lastActivityTimestamp = Date.now();
+  resetInactivityTimer();
+});
+
+keywordQueue.on('completed', (job) => {
+  logger.info(`[INFO][keyword-crawl-queue] 작업 완료: jobId=${job.id}`);
+  lastActivityTimestamp = Date.now();
+  resetInactivityTimer();
+});
+
+keywordQueue.on('failed', (job, err) => {
+  logger.error(`[ERROR][keyword-crawl-queue] 작업 실패: jobId=${job.id}, err=${err.message}`);
+  lastActivityTimestamp = Date.now();
+  resetInactivityTimer();
+});
+
+keywordQueue.on('waiting', () => {
+  lastActivityTimestamp = Date.now();
+  resetInactivityTimer();
+});
+
+/**
+ * 비활성 타이머를 리셋합니다.
+ */
+function resetInactivityTimer() {
+  // 기존 타이머가 있으면 제거
+  if (inactivityTimer) {
+    clearTimeout(inactivityTimer);
+    logger.debug('[DEBUG] 기존 비활성 타이머 취소됨');
+  }
+  
+  // 새로운 타이머 설정
+  inactivityTimer = setTimeout(async () => {
+    const now = Date.now();
+    const idleTime = now - lastActivityTimestamp;
+    
+    logger.info(`[INFO] 큐 비활성 타이머 실행: ${Math.round(idleTime / 1000)}초 동안 활동 없음`);
+    
+    if (idleTime >= INACTIVITY_THRESHOLD) {
+      logger.info(`[INFO] 큐 비활성 감지: ${Math.round(idleTime / 1000 / 60)}분 동안 활동 없음. 불완전 데이터 처리 시작...`);
+      await processIncompleteDetailRows();
+    }
+  }, INACTIVITY_THRESHOLD);
+  
+  logger.debug('[DEBUG] 새 비활성 타이머 설정됨');
+}
+
+/**
+ * 1. blog_review_count, receipt_review_count, keywordList 중 하나라도 null인 row를 찾아 큐에 추가
+ * 2. null인 row가 없으면 어제는 있지만 오늘은 크롤링되지 않은 장소 찾아 큐에 추가
+ */
+async function processIncompleteDetailRows() {
+  try {
+    // 14:00 규칙 적용
+    const now = new Date();
+    const today14h = new Date(now);
+    today14h.setHours(14, 0, 0, 0);
+    
+    const startDate = now < today14h ? 
+      new Date(today14h.getTime() - 24 * 60 * 60 * 1000) : // 어제 14:00
+      today14h; // 오늘 14:00
+    
+    // 이전 사이클의 시작 날짜
+    const prevCycleStartDate = new Date(startDate.getTime() - 24 * 60 * 60 * 1000);
+    
+    logger.debug(`[DEBUG] 불완전 데이터 검색 범위: ${startDate.toISOString()} ~ 현재`);
+    
+    // 1. 먼저 현재 사이클의 불완전한 데이터를 가진 레코드 찾기
+    const incompleteRows = await PlaceDetailResult.findAll({
+      where: {
+        created_at: { [Op.gte]: startDate },
+        [Op.or]: [
+          { blog_review_count: null },
+          { receipt_review_count: null },
+          { keywordList: null }
+        ]
+      },
+      order: [['id', 'ASC']],
+      limit: 500 // 한 번에 처리할 최대 개수 제한
+    });
+    
+    logger.info(`[INFO] 불완전한 데이터를 가진 레코드 ${incompleteRows.length}개 발견됨`);
+    
+    // 조회된 레코드가 있으면 큐에 추가
+    if (incompleteRows.length > 0) {
+      // 조회된 레코드 샘플 로깅
+      logger.debug(`[DEBUG] 첫 번째 불완전 레코드: ID=${incompleteRows[0].id}, placeId=${incompleteRows[0].place_id}`);
+      
+      // 큐에 일괄 추가
+      for (const row of incompleteRows) {
+        await keywordQueue.add(
+          'unifiedProcess',
+          { type: 'detail', data: { placeId: row.place_id } },
+          { 
+            priority: 5,
+            jobId: `autofill_detail_${row.place_id}_${Date.now()}`, 
+            removeOnComplete: true 
+          }
+        );
+        logger.debug(`[DEBUG] 불완전 데이터 작업 추가: placeId=${row.place_id}`);
+      }
+      
+      logger.info(`[INFO] ${incompleteRows.length}개의 불완전한 레코드를 큐에 추가했습니다.`);
+    } else {
+      // 2. 불완전 레코드가 없으면 이전 사이클에는 있었지만 현재 사이클에 없는 장소 찾기
+      logger.info('[INFO] 불완전 레코드 없음. 이전 사이클에는 있었지만 현재 사이클에 없는 장소 검색 중...');
+      
+      // 이전 사이클에 크롤된 place_id 목록
+      const prevCyclePlaceIds = await PlaceDetailResult.findAll({
+        attributes: ['place_id'],
+        where: {
+          created_at: { 
+            [Op.gte]: prevCycleStartDate,
+            [Op.lt]: startDate
+          }
+        },
+        group: ['place_id'],
+        raw: true
+      });
+      
+      // 현재 사이클에 크롤된 place_id 목록
+      const currentCyclePlaceIds = await PlaceDetailResult.findAll({
+        attributes: ['place_id'],
+        where: {
+          created_at: { [Op.gte]: startDate }
+        },
+        group: ['place_id'],
+        raw: true
+      });
+      
+      // 현재 사이클에 없는 이전 사이클 place_id 찾기
+      const prevPlaceIdSet = new Set(prevCyclePlaceIds.map(row => row.place_id));
+      const currentPlaceIdSet = new Set(currentCyclePlaceIds.map(row => row.place_id));
+      
+      // 이전에는 있었지만 현재는 없는 place_id
+      const missingPlaceIds = [...prevPlaceIdSet].filter(id => !currentPlaceIdSet.has(id));
+      
+      logger.info(`[INFO] 이전 사이클에는 있었지만 현재 사이클에 없는 장소 ${missingPlaceIds.length}개 발견됨`);
+      
+      // 발견된 장소가 있으면 큐에 추가
+      if (missingPlaceIds.length > 0) {
+        // 처리할 장소 수 제한
+        const placeIdsToProcess = missingPlaceIds.slice(0, 500);
+        
+        for (const placeId of placeIdsToProcess) {
+          await keywordQueue.add(
+            'unifiedProcess',
+            { type: 'detail', data: { placeId } },
+            { 
+              priority: 4,
+              jobId: `missing_detail_${placeId}_${Date.now()}`, 
+              removeOnComplete: true 
+            }
+          );
+          logger.debug(`[DEBUG] 누락된 장소 작업 추가: placeId=${placeId}`);
+        }
+        
+        logger.info(`[INFO] ${placeIdsToProcess.length}개의 누락된 장소를 큐에 추가했습니다.`);
+      } else {
+        logger.info('[INFO] 모든 장소가 현재 사이클에 크롤링되어 있습니다.');
+      }
+    }
+    
+    // 활동이 있었으므로 타임스탬프 업데이트
+    lastActivityTimestamp = Date.now();
+    resetInactivityTimer(); // 타이머 재설정
+  } catch (err) {
+    logger.error(`[ERROR] 불완전/누락 레코드 처리 중 오류: ${err.message}`);
+    resetInactivityTimer(); // 타이머 재설정
+  }
+}
+
+/**
+ * 수동으로 불완전 데이터를 처리하는 함수
+ */
+export async function manuallyTriggerIncompleteRows() {
+  logger.info('[INFO] 수동 불완전 데이터 처리 시작...');
+  await processIncompleteDetailRows();
+  return { message: "불완전 데이터 처리 시작됨" };
+}
+
+// 서버 시작 시 타이머 초기화
+resetInactivityTimer();
 
 /* -----------------------------------------------------------------------------------
  * 실제 크롤링 로직: basic / detail 전부에서 사용

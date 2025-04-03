@@ -17,7 +17,7 @@ import { keywordQueue } from "./keywordQueue.js";
 import sequelize from '../../config/db.js'; 
 const logger = createLogger('BasicCrawlerServiceLogger', { service: 'crawler' });
 
-//TODO : basic크롤링 두번됨. 가끔 기본 크롤링이 광고포함 12개만 파싱됨. 
+//TODO : 로그 수정 전체적으로 하기
 
 
 /**
@@ -40,17 +40,20 @@ async function updateKeywordBasicCrawled(keywordId) {
   }
 }
 /**
- * 무한 스크롤에서 '광고 제외' 체크를 하지 않고,
- * 전체 항목(el.length)의 증가만으로 계속 스크롤합니다.
+ * 무한 스크롤에서 광고 제외 항목의 증가 패턴을 분석하여 최적화된 스크롤링을 수행합니다.
+ * 100의 배수가 아닌 중간에서 끊어지면 추가 로딩이 없다고 판단합니다.
  */
 async function performInfiniteScroll(page, itemSelector, maxItems = 300) {
   const scrollSel = '#_list_scroll_container';
-  const MAX_ITERATION = 30; // 필요에 따라 늘리기
-  const MAX_NOCHANGE = 5;   // 필요에 따라 늘리기
-
+  const MAX_ITERATION = 30; // 최대 반복 횟수
+  const MAX_NOCHANGE = 5;   // 연속 변화 없음 횟수 제한
+  
   let iteration = 0;
   let noChangeCount = 0;
   let previousCount = 0;
+  let previousFilteredCount = 0; // 광고 제외 이전 개수
+
+  logger.info(' 무한 스크롤 시작');
 
   while (true) {
     iteration++;
@@ -63,43 +66,96 @@ async function performInfiniteScroll(page, itemSelector, maxItems = 300) {
       }
     }, scrollSel);
 
-    // (1) 이번 스크롤 후 전체 항목 수
-    const currentCount = await page.$$eval(itemSelector, els => els.length);
+    // 전체 항목 수와 광고 제외 항목 수 모두 확인
+    const counts = await page.evaluate((selector) => {
+      const elements = document.querySelectorAll(selector);
+      const total = elements.length;
+      
+      // 광고 제외 개수 카운트
+      const filtered = Array.from(elements).filter(el => {
+        const laimExpId = el.getAttribute('data-laim-exp-id');
+        return laimExpId !== 'undefined*e'; // 광고 아닌 것만 포함
+      }).length;
+      
+      return { total, filtered };
+    }, itemSelector);
+    
+    const currentCount = counts.total;
+    const filteredCount = counts.filtered;
 
-    // 만약 원하는 maxItems(300) 이상 모였으면 중단
-    if (currentCount >= maxItems) {
-      console.log(`[SCROLL] ${currentCount}개 도달 → 스크롤 중단`);
+    // 로그에 총 개수와 광고 제외 개수 모두 표시
+    logger.debug(`[DEBUG] 스크롤 #${iteration}: 총 ${currentCount}개 (광고 제외 ${filteredCount}개)`);
+
+    // 조건 1: 최대 항목 수 도달 시 중단
+    if (filteredCount >= maxItems) {
+      logger.info(` 목표 아이템 수(${maxItems}개) 도달! 광고 제외 ${filteredCount}개`);
       break;
     }
 
+    // 조건 2: 광고 제외 개수가 100단위가 아니고 20개 이상인 경우 (예: 83, 172, 236...)
+    // 그리고 이전과 비교해 변화가 있었지만 로딩이 완료된 것으로 판단
+    if (filteredCount >= 20 && 
+        filteredCount !== 100 && 
+        filteredCount !== 200 && 
+        filteredCount !== 300 &&
+        filteredCount > previousFilteredCount) {
+      
+      // 나머지를 계산하여 100의 배수가 아닌지 확인
+      const remainder = filteredCount % 100;
+      if (remainder > 0 && remainder < 90) { // 100의 배수로부터 90개 미만 차이나면 로딩 완료로 간주
+        logger.info(` 광고 제외 ${filteredCount}개 (100단위 아님) - 추가 로딩 없을 것으로 판단하고 중단`);
+        break;
+      }
+    }
     // 잠시 지연 (네트워크/DOM 로딩 대기)
-    await new Promise(r => setTimeout(r, 1500)); 
+    await randomDelay(1, 1.3);
+    
+    // 다시 체크
+    const newCounts = await page.evaluate((selector) => {
+      const elements = document.querySelectorAll(selector);
+      const total = elements.length;
+      const filtered = Array.from(elements).filter(el => {
+        const laimExpId = el.getAttribute('data-laim-exp-id');
+        return laimExpId !== 'undefined*e';
+      }).length;
+      return { total, filtered };
+    }, itemSelector);
+    
+    const newCount = newCounts.total;
+    const newFilteredCount = newCounts.filtered;
 
-    // (2) 새 항목이 로딩되었는지 다시 체크
-    const newCount = await page.$$eval(itemSelector, els => els.length);
-
-    if (newCount > previousCount) {
-      // 증가했다면 계속
-      console.log(`[SCROLL] itemCount: ${previousCount} → ${newCount}`);
+    // 개수 변화 확인
+    if (newCount > previousCount || newFilteredCount > previousFilteredCount) {
+      logger.debug(`[DEBUG] 아이템 증가: ${previousCount}→${newCount} (광고 제외: ${previousFilteredCount}→${newFilteredCount})`);
       previousCount = newCount;
+      previousFilteredCount = newFilteredCount;
       noChangeCount = 0;
     } else {
-      // 변화 없으면 카운트 증가
       noChangeCount++;
-      console.log(`[SCROLL] noChangeCount=${noChangeCount}`);
+      logger.debug(`[DEBUG] 변화 없음 ${noChangeCount}회: ${newCount}개 (광고 제외 ${newFilteredCount}개)`);
     }
 
-    // (3) 반복 한계 or 연속 변화 없음 횟수 초과 시 중단
+    // 반복 제한 또는 연속 변화 없음 횟수 초과 시 중단
     if (iteration >= MAX_ITERATION || noChangeCount >= MAX_NOCHANGE) {
-      console.log(`[SCROLL] 반복 중단 (iteration=${iteration}, noChange=${noChangeCount})`);
+      logger.info(` 스크롤 중단 조건 도달: 반복=${iteration}, 연속변화없음=${noChangeCount}`);
       break;
     }
   }
 
-  // 스크롤 종료 보고
-  const finalCount = await page.$$eval(itemSelector, els => els.length);
-  console.log(`[SCROLL] 스크롤 종료. 총 ${finalCount}개(광고 포함)`);
-  return finalCount;
+  // 최종 카운트 보고
+  const finalCounts = await page.evaluate((selector) => {
+    const elements = document.querySelectorAll(selector);
+    const total = elements.length;
+    const filtered = Array.from(elements).filter(el => {
+      const laimExpId = el.getAttribute('data-laim-exp-id');
+      return laimExpId !== 'undefined*e';
+    }).length;
+    return { total, filtered };
+  }, itemSelector);
+
+  logger.info(` 무한 스크롤 종료: 총 ${finalCounts.total}개 아이템 중 유효 ${finalCounts.filtered}개 (광고 제외)`);
+  
+  return finalCounts.filtered; // 광고 제외 개수 반환
 }
 
 /**
@@ -168,7 +224,7 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
 
     // Puppeteer 옵션
     const launchOptions = {
-      headless: false,
+      headless: 'new',
       args: []
     };
     if (PROXY_SERVER) {
@@ -231,6 +287,7 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
       logger.error('[ERROR] canvas.mapboxgl-canvas 로딩 실패:', err);
       throw new Error('Mapbox canvas failed to load - aborting crawl');
     }
+    await randomDelay(1, 1.5);
     // 무한 스크롤
     await performInfiniteScroll(page, listItemSelector);
 
@@ -396,117 +453,55 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
 
     logger.info(`14:00 rule applied: Start date = ${startDate.toISOString()}`);
 
-/**
- * 2) 수집된 items를 돌면서 KeywordBasicCrawlResult 업데이트/생성
- */
-const failedItems = [];
-const stats = {
-  total: items.length,
-  success: 0,
-  updated: 0,
-  created: 0,
-  failed: 0,
-  deleted: 0,
-  retried: 0,
-  finalFailed: 0,
-};
+    /**
+     * 2) 수집된 items를 돌면서 KeywordBasicCrawlResult 항상 새로 생성
+     */
+    const failedItems = [];
+    const stats = {
+      total: items.length,
+      success: 0,
+      created: 0,
+      updated: 0,
+      failed: 0
+    };
 
-// 먼저 이번 사이클의 기존 레코드를 모두 삭제
-try {
-  const deletedCount = await KeywordBasicCrawlResult.destroy({
-    where: {
-      keyword_id: keywordId,
-      created_at: {
-        [Op.gte]: startDate
+    logger.info(`[BasicCrawler] 키워드 "${keywordText}" - 총 ${items.length}개 항목 새로 저장 시작`);
+
+    // 기존 레코드 삭제 로직 제거하고 항상 새로운 행으로 저장
+    for (const item of items) {
+      if (!item.placeId) continue;
+
+      try {
+        // 항상 새로운 행으로 생성
+        await KeywordBasicCrawlResult.create({
+          keyword_id: keywordId,
+          place_id: parseInt(item.placeId, 10),
+          place_name: item.name,
+          category: item.category,
+          ranking: item.rank,
+          last_crawled_at: new Date()
+        });
+        stats.created++;
+        stats.success++;
+      } catch (err) {
+        logger.error(`[ERROR] Failed to process item (placeId=${item.placeId}, name=${item.name}):`, err);
+        failedItems.push(item);
+        stats.failed++;
       }
     }
-  });
-  stats.deleted = deletedCount;
-  logger.info(`[DB:DELETE] 키워드 "${keywordText}"의 기존 사이클 레코드 ${deletedCount}개 삭제 완료`);
-} catch (err) {
-  logger.error(`[ERROR] 기존 레코드 삭제 실패:`, err);
-}
 
-// 새로 크롤링된 모든 항목을 저장
-for (const item of items) {
-  if (!item.placeId) continue;
-
-  try {
-    // 모든 항목을 새로 생성
-    await KeywordBasicCrawlResult.create({
-      keyword_id: keywordId,
-      place_id: parseInt(item.placeId, 10),
-      place_name: item.name,
-      category: item.category,
-      ranking: item.rank,
-      last_crawled_at: new Date()
-    });
-    stats.created++;
-    stats.success++;
-  } catch (err) {
-    logger.error(`[ERROR] Failed to process item (placeId=${item.placeId}):`, err);
-    failedItems.push({ item });
-    stats.failed++;
-  }
-}
-
-// Log only once after processing all items
-if (stats.deleted > 0) {
-  logger.info(`[DB:DELETE] Deleted ${stats.deleted} old records for keyword "${keywordText}"`);
-}
-if (stats.created > 0) {
-  logger.info(`[DB:CREATE] Created ${stats.created} new records for keyword "${keywordText}"`);
-}
-
-    // 3) 실패 아이템 재시도 (원하시면 기존 구조 그대로 유지)
-    if (failedItems.length > 0) {
-      logger.info(`Retrying failed items: ${failedItems.length} items`);
-      for (const failedItem of failedItems) {
-        try {
-          await randomDelay(1, 2);
-          const { item } = failedItem;
-    
-          // Apply the 14:00 rule during retries, but only update existing records
-          const existingRecord = await KeywordBasicCrawlResult.findOne({
-            where: {
-              keyword_id: keywordId,
-              place_id: parseInt(item.placeId, 10),
-              created_at: {
-                [Op.gte]: startDate
-              }
-            },
-            order: [['id', 'DESC']]
-          });
-    
-          if (existingRecord) {
-            await existingRecord.update({
-              place_name: item.name,
-              category: item.category,
-              ranking: item.rank,
-              last_crawled_at: new Date()
-            });
-            logger.info(`[DB:UPDATE] Retry succeeded for placeId=${item.placeId}`);
-            stats.retried++;
-          } else {
-            // Skip creating new records during retry as well
-            logger.debug(`[DEBUG] Skipping retry for placeId=${item.placeId} (no existing record)`);
-          }
-        } catch (err) {
-          logger.error(`[ERROR] Final update failed for placeId=${failedItem.item.placeId}:`, err);
-          stats.finalFailed++;
-        }
-      }
+    // 통계 로깅 (삭제 관련 로그 제거)
+    if (stats.created > 0) {
+      logger.info(`[DB:CREATE] Created ${stats.created} new records for keyword "${keywordText}"`);
     }
-    
-    // 4) 로그 출력
+
+    // 로그 출력 수정
     logger.info(`[BasicCrawler] Statistics for keyword "${keywordText}":`);
     logger.info(`- Total processed: ${stats.total}`);
     logger.info(`- Successfully created: ${stats.created}`);
-    logger.info(`- Successfully updated: ${stats.updated}`);
-    logger.info(`- Retry successes: ${stats.retried}`);
-    logger.info(`- Final failures: ${stats.finalFailed}`);
-    logger.info(`- Completion rate: ${((stats.success + stats.retried) / stats.total * 100).toFixed(1)}%`);
-    
+    logger.info(`- Failed: ${stats.failed}`);
+    logger.info(`- Completion rate: ${((stats.success) / stats.total * 100).toFixed(1)}%`);
+
     /** 
      * 5) items가 존재하면 basic_last_crawled_date 업데이트 
      */
@@ -539,12 +534,12 @@ if (stats.created > 0) {
         cycleStart = new Date(today14h.getTime() - 24 * 60 * 60 * 1000);
       }
 
-      logger.debug(`[DEBUG] 이번 사이클 시작 시각: ${cycleStart.toISOString()}`);
-
       // 통계용 카운트
       let insertedCount = 0;
       let updatedCount = 0;
       let errorCount = 0;
+      let detailQueueCount = 0;
+      let skipDetailQueueCount = 0;
 
       // placeIds를 순회하면서 개별 트랜잭션 처리
       for (const pid of placeIds) {
@@ -573,7 +568,6 @@ if (stats.created > 0) {
               // (a) 이번 사이클에 이미 있다면 -> update
               await existing.update({ savedCount: countVal }, { transaction: t });
               updatedCount++;
-              // Removed individual log
             } else {
               // (b) 이번 사이클 내 레코드가 없다면 -> 새로 생성
               await PlaceDetailResult.create({
@@ -582,24 +576,47 @@ if (stats.created > 0) {
                 savedCount: countVal
               }, { transaction: t });
               insertedCount++;
-              // Removed individual log
+            }
+            
+            // 중요: detail 큐 추가 전 14:00 규칙에 따라 중복 체크
+            let needsDetailCrawl = true;
+            
+            // 현재 사이클에 이미 완전히 크롤링된 데이터가 있는지 확인
+            if (existing && 
+                existing.blog_review_count !== null && 
+                existing.receipt_review_count !== null && 
+                existing.keywordList !== null) {
+              // 이미 완전한 데이터가 있으면 큐에 추가하지 않음
+              needsDetailCrawl = false;
+              skipDetailQueueCount++;
+            }
+            
+            // 필요한 경우에만 Detail 작업 큐 추가
+            if (needsDetailCrawl) {
+              await keywordQueue.add(
+                'unifiedProcess',
+                { type: 'detail', data: { placeId: pid } },
+                { priority: 5 }
+              );
+              detailQueueCount++;
             }
           });
         } catch (err) {
           errorCount++;
           logger.error(`[ERROR] Failed to process place_id=${pid}: ${err.message}`);
+          
+          // 오류 발생 시에도 일단 큐에 추가 (데이터 처리 오류가 있어도 크롤링은 시도)
+          await keywordQueue.add(
+            'unifiedProcess',
+            { type: 'detail', data: { placeId: pid } },
+            { priority: 5 }
+          );
+          detailQueueCount++;
         }
-
-        // Detail 작업 큐 추가 (중복 방지를 원하면 jobId 설정 가능)
-        await keywordQueue.add(
-          'unifiedProcess',
-          { type: 'detail', data: { placeId: pid } },
-          { priority: 5 }
-          // , { jobId: `detail-${pid}`, removeOnComplete: true } // 중복 detail job 차단을 원한다면 추가
-        );
       }
 
-      logger.info(`[PLACE_DETAIL] 처리 완료 - 키워드 "${keywordText}": 총 ${placeIds.length}개 중 새 행 ${insertedCount}개, 업데이트 ${updatedCount}개, 오류 ${errorCount}개`);
+      logger.info(`[PLACE_DETAIL] 처리 완료 - 키워드 "${keywordText}": 총 ${placeIds.length}개 중 신규 ${insertedCount}개, 업데이트 ${updatedCount}개, 오류 ${errorCount}개`);
+      logger.info(`[DETAIL_QUEUE] 총 ${detailQueueCount}개 장소가 detail 큐에 추가됨 (${skipDetailQueueCount}개 장소는 이미 크롤링 완료되어 스킵)`);
       
       if (errorCount > 0) {
         logger.warn(`[WARN] place_detail_results 처리 중 ${errorCount}개 항목에서 오류 발생`);

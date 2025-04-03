@@ -7,6 +7,7 @@ import passport from "./middlewares/passport.js"
 import morgan from "morgan"
 import cookieParser from "cookie-parser"
 
+import adminRoutes from "./routes/adminRoutes.js"
 import authRoutes from "./routes/authRoutes.js"
 import keywordRoutes from "./routes/keywordRoutes.js"
 import userRoutes from "./routes/userRoutes.js"
@@ -41,12 +42,19 @@ app.use(cookieParser())
 app.use(express.json())
 app.use(passport.initialize())
 
+// 라우트 등록 전에 글로벌 디버그 미들웨어 추가
+app.use((req, res, next) => {
+  console.log(`[SERVER DEBUG] 요청 접수: ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 // 라우트
 app.use("/auth", authRoutes)
 app.use("/keyword", keywordRoutes)
+console.log("[SERVER] 키워드 라우터가 '/keyword' 경로에 마운트됨");
 app.use("/api", userRoutes)
 app.use("/api/place", placeRoutes); // 원래대로 /api/place 유지
-
+app.use("/api/admin", adminRoutes)
 // Redis 연결
 await connectRedis()
 

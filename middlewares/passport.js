@@ -162,7 +162,7 @@ passport.use(
             email: email || "",
             provider: "kakao",
             provider_id: kakaoId,
-            is_completed: true,
+            is_completed: false,
           });
         }
         // 이미 (kakao,kakaoId)인 user

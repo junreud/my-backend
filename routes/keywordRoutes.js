@@ -9,9 +9,18 @@ import {
   groupKeywordsHandler,
   saveGroupedKeywordsHandler,
   saveSelectedKeywordsHandler,
+  addUserKeywordHandler,
+  changeUserKeywordHandler,
+  getKeywordStatusHandler, // 추가: 키워드 상태 확인 핸들러
 } from "../controllers/keywordController.js"
 
 const router = express.Router()
+
+// 라우터 레벨 미들웨어로 모든 요청에 대해 로그 추가
+router.use((req, res, next) => {
+  console.log(`[ROUTER DEBUG] 키워드 라우터 요청: ${req.method} ${req.originalUrl}`);
+  next();
+});
 
 // (1) URL 정규화
 router.post(
@@ -67,5 +76,35 @@ router.post(
   saveSelectedKeywordsHandler
 )
 
+// 사용자 키워드 추가
+router.post(
+  "/user-keywords",
+  passport.authenticate("jwt", { session: false }),
+  addUserKeywordHandler
+)
+
+// 키워드 변경 - 디버그 로그 추가
+router.post(
+  "/change-user-keyword",
+  (req, res, next) => {
+    console.log("[DEBUG] change-user-keyword 라우트에 요청 도달:", req.body);
+    next();
+  },
+  changeUserKeywordHandler
+)
+
+// 키워드 크롤링 상태 확인 엔드포인트 (ID로)
+router.get(
+  "/status/:keywordId",
+  passport.authenticate("jwt", { session: false }),
+  getKeywordStatusHandler
+)
+
+// 키워드 크롤링 상태 확인 엔드포인트 (키워드명으로)
+router.get(
+  "/status",
+  passport.authenticate("jwt", { session: false }),
+  getKeywordStatusHandler
+)
 
 export default router

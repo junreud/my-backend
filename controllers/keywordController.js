@@ -14,6 +14,9 @@ import sequelize from "../config/db.js";
 import { crawlKeywordBasic } from "../services/crawler/basicCrawlerService.js";
 import { createLogger } from '../lib/logger.js';
 import { keywordQueue } from "../services/crawler/keywordQueue.js";
+import { addUserBasicJob } from "../services/crawler/keywordQueue.js"; // 추가: 키워드 큐 함수 임포트
+import { checkIsRestaurantByDOM } from "../services/isRestaurantChecker.js"; // 추가: isRestaurant 확인 함수 임포트
+import KeywordBasicCrawlResult from "../models/KeywordBasicCrawlResult.js"; // 추가: 키워드 크롤링 결과 모델
 
 const logger = createLogger('KeywordControllerLogger');
 /**
@@ -750,5 +753,247 @@ export async function saveSelectedKeywordsHandler(req, res) {
   } catch (err) {
     logger.error('[ERROR] saveSelectedKeywordsHandler:', err);
     return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+
+// 키워드 추가 핸들러 - isRestaurant 확인 로직 추가
+export const addUserKeywordHandler = async (req, res) => {
+  try {
+    const { userId, placeId, keyword } = req.body;
+
+    if (!userId || !placeId || !keyword) {
+      return res.status(400).json({ message: "필수 필드가 누락되었습니다." });
+    }
+
+    // 1. 키워드 레코드 찾기
+    let keywordRecord = await Keyword.findOne({ where: { keyword } });
+    let created = false;
+
+    // 2. 키워드가 존재하지 않으면 isRestaurant 판별 후 생성
+    if (!keywordRecord) {
+      created = true;
+      // isRestaurantChecker.js의 함수를 사용하여 restaurant 여부 확인
+      await checkIsRestaurantByDOM(keyword);
+      // checkIsRestaurantByDOM은 내부적으로 키워드를 생성하므로, 다시 조회
+      keywordRecord = await Keyword.findOne({ where: { keyword } });
+      
+      if (!keywordRecord) {
+        return res.status(500).json({ message: "키워드 생성 중 오류가 발생했습니다." });
+      }
+      logger.info(`[INFO] 새 키워드 "${keyword}" 생성됨, isRestaurant=${keywordRecord.isRestaurant}`);
+    }
+
+    // 3. UserPlaceKeyword 테이블에서 연결 확인
+    const existingRelation = await UserPlaceKeyword.findOne({
+      where: {
+        user_id: userId,
+        place_id: placeId,
+        keyword_id: keywordRecord.id
+      }
+    });
+
+    if (existingRelation) {
+      return res.status(409).json({ message: "이미 추가된 키워드입니다." });
+    }
+
+    // 4. UserPlaceKeyword 테이블에 새로운 연결 생성
+    const userKeyword = await UserPlaceKeyword.create({
+      user_id: userId,
+      place_id: placeId,
+      keyword_id: keywordRecord.id
+    });
+
+    // 5. 새로 생성된 키워드인 경우 basic 크롤링 큐에 높은 우선순위로 추가
+    if (created) {
+      logger.info(`[INFO] 새 키워드 "${keyword}" basic 크롤링 큐에 추가`);
+      await addUserBasicJob(keyword); // 높은 우선순위로 크롤링 큐에 추가
+    }
+
+    res.status(201).json({ 
+      message: "키워드가 성공적으로 추가되었습니다.",
+      keyword: {
+        id: keywordRecord.id,
+        keyword: keywordRecord.keyword,
+        relation_id: userKeyword.id,
+        isRestaurant: keywordRecord.isRestaurant
+      }
+    });
+  } catch (error) {
+    console.error("키워드 추가 중 오류 발생:", error);
+    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+  }
+};
+
+// 키워드 변경 핸들러 - isRestaurant 확인 추가
+export const changeUserKeywordHandler = async (req, res) => {
+  try {
+    const { userId, placeId, oldKeywordId, newKeyword } = req.body;
+
+    if (!userId || !placeId || !oldKeywordId || !newKeyword || !newKeyword.trim()) {
+      return res.status(400).json({ message: "필수 필드가 누락되었습니다." });
+    }
+
+    // 1. UserPlaceKeyword 테이블에서 기존 연결 찾기
+    const userKeyword = await UserPlaceKeyword.findOne({
+      where: {
+        user_id: userId,
+        place_id: placeId,
+        keyword_id: oldKeywordId
+      }
+    });
+
+    if (!userKeyword) {
+      return res.status(404).json({ message: "해당 키워드 연결을 찾을 수 없습니다." });
+    }
+
+    // 2. Keyword 테이블에서 새 키워드 찾기
+    const trimmedKeyword = newKeyword.trim();
+    let newKeywordRecord = await Keyword.findOne({ where: { keyword: trimmedKeyword } });
+    let created = false;
+
+    // 3. 키워드가 없는 경우 isRestaurant 판별 후 생성
+    if (!newKeywordRecord) {
+      created = true;
+      // isRestaurantChecker.js의 함수를 사용하여 restaurant 여부 확인
+      await checkIsRestaurantByDOM(trimmedKeyword);
+      
+      // checkIsRestaurantByDOM은 내부적으로 키워드를 생성하므로 다시 조회
+      newKeywordRecord = await Keyword.findOne({ where: { keyword: trimmedKeyword } });
+      
+      if (!newKeywordRecord) {
+        return res.status(500).json({ message: "키워드 생성 중 오류가 발생했습니다." });
+      }
+      logger.info(`[INFO] 새 키워드 "${trimmedKeyword}" 생성됨, isRestaurant=${newKeywordRecord.isRestaurant}`);
+    }
+
+    // 4. UserPlaceKeyword 테이블에서 새 키워드로 이미 연결이 있는지 확인
+    const existingRelation = await UserPlaceKeyword.findOne({
+      where: {
+        user_id: userId,
+        place_id: placeId,
+        keyword_id: newKeywordRecord.id
+      }
+    });
+
+    // 5. 기존 연결 삭제
+    await userKeyword.destroy();
+
+    // 6. 새 연결이 없는 경우에만 생성 (중복 방지)
+    let userKeywordRelation;
+    if (!existingRelation) {
+      userKeywordRelation = await UserPlaceKeyword.create({
+        user_id: userId,
+        place_id: placeId,
+        keyword_id: newKeywordRecord.id
+      });
+    } else {
+      userKeywordRelation = existingRelation;
+    }
+
+    // 7. 새로 생성된 키워드인 경우에만 basic 크롤링 큐에 추가
+    if (created) {
+      logger.info(`[INFO] 새 키워드 "${trimmedKeyword}" basic 크롤링 큐에 추가`);
+      await addUserBasicJob(trimmedKeyword); // 높은 우선순위로 크롤링 큐에 추가
+    }
+
+    res.status(200).json({ 
+      message: "키워드가 성공적으로 변경되었습니다.",
+      keyword: {
+        id: newKeywordRecord.id,
+        keyword: newKeywordRecord.keyword,
+        relation_id: userKeywordRelation.id,
+        isRestaurant: newKeywordRecord.isRestaurant
+      }
+    });
+  } catch (error) {
+    console.error("키워드 변경 중 오류 발생:", error);
+    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+  }
+};
+
+/**
+ * 키워드 크롤링 상태 확인 엔드포인트
+ * GET /keyword/status/:keywordId 또는 ?keyword=키워드명
+ */
+export async function getKeywordStatusHandler(req, res) {
+  try {
+    const { keywordId } = req.params;
+    const { keyword } = req.query;
+    
+    if (!keywordId && !keyword) {
+      return res.status(400).json({
+        success: false,
+        message: "키워드 ID나 키워드명이 필요합니다."
+      });
+    }
+    
+    // 키워드 검색 (ID 또는 이름으로)
+    let keywordRecord;
+    if (keywordId) {
+      keywordRecord = await Keyword.findByPk(keywordId);
+    } else if (keyword) {
+      keywordRecord = await Keyword.findOne({ where: { keyword } });
+    }
+    
+    if (!keywordRecord) {
+      return res.status(404).json({
+        success: false,
+        message: "키워드를 찾을 수 없습니다."
+      });
+    }
+    
+    // 키워드 기본 크롤링 상태 확인
+    const isCrawled = !!keywordRecord.basic_last_crawled_date;
+    const lastCrawledDate = keywordRecord.basic_last_crawled_date;
+    
+    // 크롤링된 항목 수 가져오기
+    const crawledItemsCount = await KeywordBasicCrawlResult.count({
+      where: { keyword_id: keywordRecord.id }
+    });
+    
+    // 응답 준비
+    const currentTime = new Date();
+    let status = "not_crawled";
+    let timeAgo = null;
+    
+    if (isCrawled) {
+      // 크롤링된 시간과 현재 시간의 차이 계산
+      const timeDiff = currentTime - new Date(lastCrawledDate);
+      const minutesAgo = Math.floor(timeDiff / (1000 * 60));
+      
+      if (minutesAgo < 60) {
+        timeAgo = `${minutesAgo}분 전`;
+      } else {
+        const hoursAgo = Math.floor(minutesAgo / 60);
+        if (hoursAgo < 24) {
+          timeAgo = `${hoursAgo}시간 전`;
+        } else {
+          const daysAgo = Math.floor(hoursAgo / 24);
+          timeAgo = `${daysAgo}일 전`;
+        }
+      }
+      
+      status = "completed";
+    }
+    
+    return res.json({
+      success: true,
+      data: {
+        keyword: keywordRecord.keyword,
+        isRestaurant: keywordRecord.isRestaurant,
+        status,
+        lastCrawled: lastCrawledDate,
+        timeAgo,
+        crawledItemsCount,
+        monthlySearchVolume: keywordRecord.monthlySearchVolume
+      }
+    });
+  } catch (err) {
+    logger.error("[ERROR] getKeywordStatusHandler:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
   }
 }
