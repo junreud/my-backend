@@ -46,7 +46,8 @@ const allowedOrigins = [
   'http://lakabe.com',
   'https://lakabe.com',
   'http://www.lakabe.com',
-  'https://www.lakabe.com'
+  'https://www.lakabe.com',
+  'https://api.lakabe.com'
 ];
 
 app.use(
@@ -103,6 +104,6 @@ if (process.env.NODE_ENV === 'development') {
   // 프로덕션 환경: Express 앱 시작
   app.listen(PORT, () => {
     console.log(`Production server running on port ${PORT}`)
-    console.log(`Available via Cloudflare Tunnel at http://lakabe.com`)
+    console.log(`Available via Cloudflare Tunnel at https://api.lakabe.com`)
   })
 }

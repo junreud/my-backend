@@ -117,14 +117,14 @@ export async function addInfo(req, res) {
     //    (B) refreshToken -> 쿠키
     res.cookie("refreshToken", tokens.refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'development', // 개발환경에서만 secure:true 필요
+      secure: true, // HTTPS 사용 시 true로 설정
       sameSite: "none",
     });
 
     // 환경에 따라 다른 리다이렉트 URL 사용
     const baseUrl = process.env.NODE_ENV === 'development' 
       ? 'https://localhost:3000' 
-      : 'http://lakabe.com';
+      : 'https://lakabe.com';
       
     //    (C) accessToken -> JSON
     return res.json({
