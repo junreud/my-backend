@@ -41,6 +41,12 @@ export async function issueTokens(userId) {
 // [2] Refresh 요청
 // ------------------------------------------------------------
 export async function refresh(req, res) {
+  console.log("===== REFRESH 요청 =====");
+  console.log("쿠키 존재 여부:", !!req.cookies);
+  console.log("모든 쿠키:", req.cookies);
+  console.log("refreshToken 쿠키:", req.cookies.refreshToken);
+  console.log("요청 헤더:", req.headers);
+  
   try {
     // 쿠키에서 리프레시 토큰 추출
     const refreshToken = req.cookies.refreshToken;
