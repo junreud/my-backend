@@ -39,11 +39,17 @@ app.use((req, res, next) => {
 })
 app.use(morgan("dev"))
 
-// CORS 설정 - 로컬과 cloudflare 도메인 모두 허용
+// 환경 변수에서 설정 가져오기
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+// 허용할 출처 목록
 const allowedOrigins = [
-  'https://localhost:3000',
+  // 개발 환경
   'http://localhost:3000',
-  'http://lakabe.com',
+  'https://localhost:3000',
+  // 배포 환경
+  FRONTEND_URL,
   'https://lakabe.com',
   'http://www.lakabe.com',
   'https://www.lakabe.com',
@@ -53,19 +59,25 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function(origin, callback) {
-      // origin이 undefined인 경우 (예: Postman 요청, 서버 간 요청 등)
+      // 서버 간 요청 허용 (origin이 없는 경우)
       if (!origin) return callback(null, true);
       
       if (allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
         console.warn(`[CORS] Origin ${origin} not allowed`);
-        callback(null, true); // Cloudflare Tunnel 사용 시 다양한 출처를 허용하기 위해 true로 설정할 수도 있음
+        // 프로덕션에서는 허용되지 않은 origin 차단
+        if (NODE_ENV === 'production') {
+          return callback(new Error('Not allowed by CORS'));
+        }
+        // 개발 환경에서는 경고만 출력하고 허용
+        callback(null, true);
       }
     },
     credentials: true, // 쿠키 전송 허용
   })
-)
+);
+
 app.use(cookieParser())
 app.use(express.json())
 app.use(passport.initialize())
