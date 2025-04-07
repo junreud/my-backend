@@ -241,6 +241,8 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
         message: "userId와 placeId는 필수 파라미터입니다." 
       });
     }
+    
+    logger.info(`[keyword-ranking-details] 요청 시작: userId=${userId}, placeId=${placeId}`);
 
     // (1) UserPlaceKeyword에서 해당 사용자-업체에 연결된 모든 키워드 ID 조회
     const userPlaceKeywords = await UserPlaceKeyword.findAll({
@@ -266,8 +268,11 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       keywordMap[k.id] = k.keyword;
     });
 
-    logger.debug(`[DEBUG] 총 ${keywordIds.length}개 키워드 ID 조회: ${keywordIds.join(', ')}`);
-    logger.debug(`[DEBUG] 키워드 매핑: ${JSON.stringify(keywordMap)}`);
+    // 키워드 목록 로깅
+    logger.info(`[keyword-ranking-details] 조회할 키워드 목록 (총 ${keywordIds.length}개):`);
+    keywords.forEach(k => {
+      logger.info(`- 키워드: "${k.keyword}" (ID: ${k.id})`);
+    });
 
     // (3) 3개월 전부터 현재까지 범위 계산
     const threeMonthsAgo = dayjs().subtract(3, "month").startOf("day").toDate();
@@ -284,6 +289,27 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       },
       order: [["last_crawled_at", "DESC"], ["updated_at", "DESC"]]
     });
+
+    // 키워드별 데이터 개수 추적을 위한 객체
+    const keywordDataCounts = {};
+    keywordIds.forEach(id => {
+      keywordDataCounts[id] = 0;
+    });
+    
+    // BasicResults에서 키워드별 데이터 개수 계산
+    basicResults.forEach(result => {
+      if (keywordDataCounts[result.keyword_id] !== undefined) {
+        keywordDataCounts[result.keyword_id]++;
+      }
+    });
+    
+    // 키워드별 데이터 개수 로깅
+    logger.info(`[keyword-ranking-details] 키워드별 데이터 개수:`);
+    for (const keywordId in keywordDataCounts) {
+      if (keywordMap[keywordId]) {
+        logger.info(`- 키워드 "${keywordMap[keywordId]}" (ID: ${keywordId}): ${keywordDataCounts[keywordId]}개`);
+      }
+    }
 
     logger.debug(`[DEBUG] 총 ${keywords.length}개 키워드에 대한 ${basicResults.length}개 데이터 조회됨`);
 
@@ -312,6 +338,12 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
         basicDateMap[dateKey][b.keyword_id][b.place_id] = b;
       }
     }
+
+    // 최종 데이터에서 키워드별 집계를 위한 객체
+    const keywordFinalCounts = {};
+    keywordIds.forEach(id => {
+      keywordFinalCounts[id] = 0;
+    });
 
     // (6) PlaceDetailResult 조회 추가
     const detailResults = await PlaceDetailResult.findAll({
@@ -388,6 +420,11 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
               : null,
             date_key: dateKey,
           });
+          
+          // 최종 데이터에 추가될 때 키워드별 카운트 증가
+          if (keywordFinalCounts[keywordId] !== undefined) {
+            keywordFinalCounts[keywordId]++;
+          }
         }
       }
     }
@@ -403,12 +440,25 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       return (a.ranking || 999) - (b.ranking || 999);
     });
 
-    // 로깅
-    logger.debug(`[keyword-ranking-details] 총 ${finalData.length}개 결과 반환: userId=${userId}, placeId=${placeId}, 키워드 ${keywordIds.length}개`);
+    // 최종 결과에서 키워드별 데이터 개수 로깅
+    logger.info(`[keyword-ranking-details] 최종 응답의 키워드별 데이터 개수:`);
+    for (const keywordId in keywordFinalCounts) {
+      if (keywordMap[keywordId]) {
+        logger.info(`- 키워드 "${keywordMap[keywordId]}" (ID: ${keywordId}): ${keywordFinalCounts[keywordId]}개 (최종)`);
+      }
+    }
 
+    // 전체 로깅
+    logger.info(`[keyword-ranking-details] 총 ${finalData.length}개 결과 반환: userId=${userId}, placeId=${placeId}, 키워드 ${keywordIds.length}개`);
+
+    // 응답에 키워드별 데이터 개수 추가 (선택사항)
     return res.json({
       success: true,
-      data: finalData
+      data: finalData,
+      metadata: {
+        totalItems: finalData.length,
+        keywordCounts: keywordFinalCounts
+      }
     });
   } catch (err) {
     logger.error(`[keyword-ranking-details] 오류 발생:`, err);

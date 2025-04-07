@@ -130,6 +130,68 @@ router.get('/work-histories', passport.authenticate('jwt', { session: false }), 
         });
       }
     });
+
+router.delete('/work-histories/:id', passport.authenticate('jwt', { session: false }), async (req, res) => {
+    try {
+        logger.info(`DELETE 요청 수신: /api/admin/work-histories/${req.params.id}`);
+        
+        // 1. 관리자 권한 검증
+        if (!req.user || req.user.role !== 'admin') {
+            logger.warn(`권한 없는 작업 이력 삭제 시도: ${req.user ? req.user.email : 'Unknown'} (role: ${req.user ? req.user.role : 'None'})`);
+            return res.status(403).json({ 
+                success: false, 
+                message: "관리자 권한이 필요한 작업입니다." 
+            });
+        }
+    
+        // 2. 요청 경로에서 작업 이력 ID 추출
+        const workHistoryId = parseInt(req.params.id, 10);
+        logger.debug(`작업 이력 ID 파싱 결과: ${workHistoryId}`);
+        
+        if (isNaN(workHistoryId)) {
+            logger.warn(`유효하지 않은 작업 이력 ID: ${req.params.id}`);
+            return res.status(400).json({
+                success: false,
+                message: "유효하지 않은 작업 이력 ID입니다."
+            });
+        }
+    
+        // 3. 작업 이력 존재 확인
+        logger.debug(`작업 이력 조회 시도: ID ${workHistoryId}`);
+        const workHistory = await WorkHistory.findByPk(workHistoryId);
+        logger.debug(`작업 이력 조회 결과: ${workHistory ? '찾음' : '찾지 못함'}`);
+        
+        if (!workHistory) {
+            logger.warn(`존재하지 않는 작업 이력 삭제 시도: ID ${workHistoryId}`);
+            return res.status(404).json({
+                success: false,
+                message: "해당 ID의 작업 이력을 찾을 수 없습니다."
+            });
+        }
+    
+        // 4. 작업 이력 삭제
+        logger.debug(`작업 이력 삭제 시도: ID ${workHistoryId}`);
+        await workHistory.destroy();
+        logger.debug(`작업 이력 삭제 완료: ID ${workHistoryId}`);
+        
+        // 5. 삭제 성공 로그 기록
+        logger.info(`관리자(${req.user.email})가 작업 이력을 삭제했습니다: ID ${workHistoryId}`);
+    
+        // 6. 성공 응답 전송
+        res.json({
+            success: true,
+            message: "작업 이력이 성공적으로 삭제되었습니다."
+        });
+        
+    } catch (error) {
+        logger.error('작업 이력 삭제 오류:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: '서버 오류가 발생했습니다.' 
+        });
+    }
+});
+
 /**
  * GET /api/admin/users-with-places
  * 관리자 전용 API - 모든 일반 사용자와 그들의 등록 업체 정보 조회

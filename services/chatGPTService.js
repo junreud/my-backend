@@ -18,22 +18,19 @@ const openai = new OpenAI({
 export async function analyzePlaceWithChatGPT(placeInfo) {
   // (A) 시스템 지침
   const systemPrompt = `
-당신은 전문 마케팅 컨설턴트입니다. 
-아래 JSON을 분석하여 '주소 키워드'(locationKeywords)와 '업체 특징 키워드'(featureKeywords)를 
-각각 중복 없이 추출하는 일을 잘합니다.
-답변은 반드시 한국어로 작성해주세요.
-`;
+당신은 전문 마케팅 컨설턴트입니다.
+아래 JSON을 분석하여 '주소 키워드'(locationKeywords)와 '업체 특징 키워드'(featureKeywords)를 각각 추출하는 일을 잘합니다.
+리스트 안의 값은 반드시 한국어로 작성해주세요.`;
 
   // (B) 사용자 요청  
-  const userPrompt = `
-아래 JSON 데이터를 보고 다음 [규칙]에 따라 **JSON 형식**으로 **locationKeywords**와 **featureKeywords**를 제공해주세요.
+  const userPrompt = `아래 JSON 데이터를 보고 다음 [규칙]에 따라 **JSON 형식**으로 **locationKeywords**와 **featureKeywords**를 제공해주세요.
 설명은 간략하게만 해주세요.
 
 [규칙]
-1) locationKeywords:
-   - 'address'에서 시/동/구/읍/면이 포함된 키워드를 추출합니다. 
-     그 후 해당 시/동/구/읍/면을 분리한 키워드도 중복 없이 추가로 무조건 추출합니다.
-     예) "사당동" → ["사당동", "사당"], "동작구" → ["동작구", "동작"]  
+1) locationKeywords: 
+   - 'address'는 한국의 행정경계를 표현합니다. 특별시, 광역시, 도로 크게 분류할 수 있습니다. 각 도와 광역시 내에슨 시, 군, 구로 이루어져 있으며 다시 동, 읍, 면이 포함됩니다.
+     
+     (예: "사당동" → ["사당동", "사당"], "동작구" → ["동작구", "동작"])
    - 'blogReviewTitles', 'shopIntro', 'category'에서 **명소, 장소, 랜드마크, 관광지, 건물명** 등의 키워드를 추출합니다.
    - **업체명**, **브랜드명**은 절대 제외합니다.
    - 최대 **15개** 키워드까지만 추출합니다.
@@ -74,7 +71,7 @@ ${JSON.stringify(placeInfo, null, 2)}
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.3,
+      temperature: 0.,
       max_tokens: 1000,  // 토큰 수 증가
     });
 
