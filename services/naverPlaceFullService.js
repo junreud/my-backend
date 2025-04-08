@@ -87,7 +87,6 @@ async function getPlaceDetailWithAxios(placeUrl) {
         name: null,
         category: null,
         address: null,
-        roadAddress: null,
         keywordList: [],
         x: null,
         y: null
@@ -97,7 +96,7 @@ async function getPlaceDetailWithAxios(placeUrl) {
     const jsonString = match[1];
     const apolloData = JSON.parse(jsonString);
 
-    // 업체 정보 (placeId, name, category, address, roadAddress)
+    // 업체 정보 (placeId, name, category, address)
     const placeDetail = parsePlaceDetail(apolloData);
 
     // 대표 키워드
@@ -119,7 +118,6 @@ async function getPlaceDetailWithAxios(placeUrl) {
       name: null,
       category: null,
       address: null,
-      roadAddress: null,
       keywordList: [],
       x: null,
       y: null
@@ -144,7 +142,6 @@ function parsePlaceDetail(apolloData) {
       name: null,
       category: null,
       address: null,
-      roadAddress: null
     };
   }
 
@@ -154,7 +151,6 @@ function parsePlaceDetail(apolloData) {
     place_name: detailObj.name,
     category: detailObj.category,
     address: detailObj.address,
-    roadAddress: detailObj.roadAddress
   };
 }
 

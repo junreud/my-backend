@@ -162,8 +162,18 @@ export async function chatgptKeywordsHandler(req, res) {
     const { placeInfo } = req.body
     // placeInfo에는 { shopIntro, blogReviewTitles... } 등 정보가 있다고 가정
 
-    // ChatGPT 분석
-    const { locationKeywords, featureKeywords } = await analyzePlaceWithChatGPT(placeInfo)
+    // URL에서 restaurant 여부 확인
+    const isRestaurant = placeInfo.normalizedUrl && 
+                          placeInfo.normalizedUrl.includes("restaurant") ? true : false
+    
+    // placeInfo에 isRestaurant 정보 추가
+    const placeInfoWithType = {
+      ...placeInfo,
+      isRestaurant
+    }
+
+    // ChatGPT 분석 (isRestaurant 정보 포함하여 전달)
+    const { locationKeywords, featureKeywords } = await analyzePlaceWithChatGPT(placeInfoWithType)
 
     // 혹은 category 쓰일 수 있음
     if (!locationKeywords.length && !featureKeywords.length) {

@@ -419,6 +419,8 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
                   : d.keywordList.split(","))
               : null,
             date_key: dateKey,
+            crawled_at: b.last_crawled_at ? new Date(b.last_crawled_at).toISOString() : new Date().toISOString(),
+
           });
           
           // 최종 데이터에 추가될 때 키워드별 카운트 증가

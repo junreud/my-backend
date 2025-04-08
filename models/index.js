@@ -3,6 +3,8 @@ import PlaceDetailResult from './PlaceDetailResult.js';
 import Keyword from './Keyword.js';
 import UserPlaceKeyword from './UserPlaceKeyword.js';
 import WorkHistory from './WorkHistory.js';
+import CustomerInfo from './CustomerInfo.js';
+import ContactInfo from './ContactInfo.js';
 
 // KeywordBasicCrawlResult와 PlaceDetailResult의 관계 재정의
 KeywordBasicCrawlResult.hasOne(PlaceDetailResult, {
@@ -62,5 +64,7 @@ export {
   PlaceDetailResult,
   Keyword,
   WorkHistory,
-  UserPlaceKeyword
+  UserPlaceKeyword,
+  CustomerInfo,
+  ContactInfo
 };

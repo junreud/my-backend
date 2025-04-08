@@ -164,13 +164,14 @@ async function performInfiniteScroll(page, itemSelector, maxItems = 300) {
  * @param {*} keywordId 
  * @param {*} baseX 
  * @param {*} baseY 
+ * @param {*} forceRecrawl 
  * @returns 
  *  - items: 크롤링 결과 항목 배열
  *  - KeywordCrawlResult 테이블에 결과 저장
  *  - Keyword 테이블에 새 키워드 생성
  *  - isRestaurant 값은 isRestaurantChecker.js로부터 가져옴
  */
-export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882, baseY = 37.5666103) {
+export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882, baseY = 37.5666103, forceRecrawl = false) {
   let browser;
   let page;
   let keywordText = keyword; 
@@ -215,6 +216,20 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
         }
       }
       keywordId = keywordObj.id;
+    }
+
+    if (forceRecrawl) {
+      const now = new Date();
+      const today14h = new Date(now);
+      today14h.setHours(14, 0, 0, 0);
+      const startDate = now < today14h ? 
+        new Date(today14h.getTime() - 24 * 60 * 60 * 1000) : 
+        today14h;
+
+      const deleteCount = await KeywordBasicCrawlResult.destroy({
+        where: { keyword_id: keywordId, created_at: { [Op.gte]: startDate } }
+      });
+      logger.info(`[INFO] 키워드 "${keywordText}" (ID: ${keywordId})의 기존 레코드 ${deleteCount}개를 삭제했습니다 (강제 재크롤링)`);
     }
 
     logger.info(`[BasicCrawler] 키워드 "${keywordText}" 기본 크롤링 시작`);
@@ -319,8 +334,8 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
           nameEl = el.querySelector('span.TYaxT');
           catEl = el.querySelector('.KCMnt');
         } else {
-          nameEl = el.querySelector('span.place_bluelink, span.TYaxT, span._3Apve');
-          catEl = el.querySelector('.KCMnt, .OXiLu, ._3hCbH');
+          nameEl = el.querySelector('span.YwYLL');
+          catEl = el.querySelector('span.YzBgS');
         }
         
         const name = nameEl ? nameEl.textContent.trim() : '';
