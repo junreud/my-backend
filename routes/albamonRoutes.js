@@ -3,14 +3,10 @@
 import { Router } from 'express';
 import passport from 'passport';
 import { 
-    crawlAlbamonController, 
-    crawlAlbamonById,
+    crawlAlbamonController,
     processBusinessContacts,
-    getAllCustomers, 
-    getCustomerById,
-    getCustomerByPostingId,
-    getContactsByPostingId,
-    batchProcessJobIds
+    batchProcessJobIds,
+    getCustomersWithContacts
 } from '../controllers/albamonController.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -39,11 +35,6 @@ router.post('/crawl-search', authenticateJWT, asyncHandler(async (req, res) => {
   return await crawlAlbamonController(req, res);
 }));
 
-// 상세 정보 조회 라우터
-router.get('/detail/:id', authenticateJWT, asyncHandler(async (req, res) => {
-  logger.debug(`/detail/${req.params.id} 라우트 접근됨`);
-  return await crawlAlbamonById(req, res);
-}));
 
 // 연락처 정보 크롤링 및 저장 라우터
 router.post('/contact', authenticateJWT, asyncHandler(async (req, res) => {
@@ -52,13 +43,6 @@ router.post('/contact', authenticateJWT, asyncHandler(async (req, res) => {
   return await processBusinessContacts(req, res);
 }));
 
-// 고객 정보 조회 라우터
-router.get('/customers', authenticateJWT, asyncHandler(getAllCustomers));
-router.get('/customer/:id', authenticateJWT, asyncHandler(getCustomerById));
-router.get('/customer/posting/:postingId', authenticateJWT, asyncHandler(getCustomerByPostingId));
-router.get('/contacts/posting/:postingId', authenticateJWT, asyncHandler(getContactsByPostingId));
-
-// 배치 처리 라우터
-router.post('/batch-process', authenticateJWT, asyncHandler(batchProcessJobIds));
+router.get('/data', authenticateJWT, asyncHandler(getCustomersWithContacts));
 
 export default router;

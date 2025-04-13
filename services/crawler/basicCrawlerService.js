@@ -17,7 +17,7 @@ import { keywordQueue } from "./keywordQueue.js";
 import sequelize from '../../config/db.js'; 
 const logger = createLogger('BasicCrawlerServiceLogger', { service: 'crawler' });
 
-//TODO : 로그 수정 전체적으로 하기
+//TODO : 로그 수정 전체적으로 하기, 원인불명의 기본크롤링 진행하는 경우가 있음 로그보면서 파악해보자.
 
 
 /**

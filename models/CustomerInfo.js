@@ -28,7 +28,12 @@ const CustomerInfo = sequelize.define('CustomerInfo', {
     allowNull: true,
     comment: '주소',
   },
-  created_at: {
+  naverplace_url: {
+    type: DataTypes.STRING(200),
+    allowNull: true,
+    comment: '네이버 플레이스 URL',
+  },
+  created_at: { // Sequelize가 내부적으로 인식하는 이름
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW,
   },
@@ -38,7 +43,7 @@ const CustomerInfo = sequelize.define('CustomerInfo', {
   },
 }, {
   tableName: 'customer_info',
-  timestamps: false,
+  timestamps: true, // Sequelize가 자동 관리하도록 true로 변경 (추천)
+  underscored: true // DB 컬럼명 snake_case로 관리
 });
-
 export default CustomerInfo;

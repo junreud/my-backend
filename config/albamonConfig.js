@@ -131,7 +131,7 @@ export async function checkAlbamonCookieValidity() {
     const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     
     // Playwright로 실제 로그인 상태 확인 (더 정확함)
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: false });
     const context = await browser.newContext();
     
     // 쿠키 설정

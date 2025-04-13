@@ -16,12 +16,6 @@ import {
 } from "../config/crawler.js";
 
 /**
- * Decide if the URL is "mobile" or not, e.g. if it contains "m.place.naver.com"
- */
-function isMobileUrl(url) {
-  return url.includes("m.place.naver.com");
-}
-/**
  * 메인 함수
  *  1) Axios로 업체 디테일 정보 + 대표키워드 + (x, y 좌표)
  *  2) Puppeteer로 블로그리뷰 10개 + 업체소개글 + "새로오픈" 여부

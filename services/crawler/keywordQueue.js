@@ -110,7 +110,6 @@ function resetInactivityTimer() {
   // 기존 타이머가 있으면 제거
   if (inactivityTimer) {
     clearTimeout(inactivityTimer);
-    logger.debug('[DEBUG] 기존 비활성 타이머 취소됨');
   }
   
   // 새로운 타이머 설정
@@ -125,8 +124,6 @@ function resetInactivityTimer() {
       await processIncompleteDetailRows();
     }
   }, INACTIVITY_THRESHOLD);
-  
-  logger.debug('[DEBUG] 새 비활성 타이머 설정됨');
 }
 
 /**

@@ -1,16 +1,16 @@
 // 컨트롤러 - 비즈니스 로직 담당
-
-import { chromium } from 'playwright';
+import { Op } from 'sequelize';
 import * as cheerio from 'cheerio';
 import 'dotenv/config';
 import { createLogger } from '../lib/logger.js';
 import fetch from 'node-fetch';
 import { loadAlbamonUAandCookies } from '../config/albamonConfig.js';
-import CustomerInfo from '../models/CustomerInfo.js';
-import ContactInfo from '../models/ContactInfo.js';
 import { getLoggedInSession } from '../config/albamonConfig.js';
 import { randomDelay } from '../config/crawler.js';
-
+import { io } from '../server.js';
+import { CustomerInfo, ContactInfo } from '../models/index.js';
+import sequelize from '../config/db.js';
+import { batchProcessNaverPlaceUrls } from '../services/naverPlaceService.js';
 const logger = createLogger('AlbamonController');
 
 // 메인 컨트롤러 - URL 기반 크롤링
@@ -28,7 +28,7 @@ export const crawlAlbamonController = async (req, res) => {
     // 잘못된 요청 형식
     logger.error(`알 수 없는 요청 형식: ${JSON.stringify(req.body)}`);
     return res.status(400).json({ 
-      success: false, 
+      success: false,
       message: "올바른 요청 형식이 아닙니다. 'urls' 배열이 필요합니다." 
     });
   } catch (error) {
@@ -58,7 +58,7 @@ const extractTotalCount = ($, type) => {
       return parseInt(countElement.text().replace(/[^0-9]/g, ''), 10);
     }
     const titleText = $('title').text();
-    const totalCountMatch = titleText.match(/(\d+(?:,\d+)*)건의?\\s*일자리/);
+    const totalCountMatch = titleText.match(/(\d+(?:,\d+)*)건의?\s*일자리/);
     if (totalCountMatch && totalCountMatch[1]) {
       return parseInt(totalCountMatch[1].replace(/,/g, ''), 10);
     }
@@ -69,7 +69,6 @@ const extractTotalCount = ($, type) => {
 // 통합 검색 페이지 파싱
 const parseSearchPage = ($) => {
   const results = [];
-
   $('.list-item-recruit--search').each((_, el) => {
     try {
       const linkElement = $(el).find('a.list-item-recruit__link');
@@ -95,14 +94,12 @@ const parseSearchPage = ($) => {
       console.warn('[WARN] 항목 파싱 중 오류:', err.message);
     }
   });
-
   return results;
 };
 
 // 지역별 페이지 파싱
 const parseAreaPage = ($) => {
   const results = [];
-
   $('.list-item-recruit--area').each((_, el) => {
     try {
       const linkElement = $(el).find('a.list-item-recruit__link');
@@ -128,7 +125,6 @@ const parseAreaPage = ($) => {
       console.warn('[WARN] 항목 파싱 중 오류:', err.message);
     }
   });
-
   return results;
 };
 
@@ -183,20 +179,17 @@ export const crawlAlbamonFromUrls = async (req, res) => {
         logger.warn(`지원하지 않는 URL 형식: ${url}`);
         continue;
       }
-      
       logger.debug(`URL 타입: ${isSearch ? '통합검색' : '지역별'}`);
       
       try {
         // 초기 요청으로 총 개수 확인
         const initialResponse = await fetchWithTimeout(
-          url, 
-          { method: 'GET', headers: getCommonHeaders(cookieStr, ua) }
+          url, { method: 'GET', headers: getCommonHeaders(cookieStr, ua) }
         );
         
         if (!initialResponse.ok) {
           throw new Error(`Failed to fetch URL ${url}: ${initialResponse.status} ${initialResponse.statusText}`);
         }
-        
         const initialHtml = await initialResponse.text();
         const $ = cheerio.load(initialHtml);
         
@@ -210,25 +203,20 @@ export const crawlAlbamonFromUrls = async (req, res) => {
           const pageUrl = new URL(url);
           pageUrl.searchParams.set('page', pageNum);
           pageUrl.searchParams.set('size', size);
-          
           logger.debug(`페이지 ${pageNum}/${totalPages} 요청: ${pageUrl.toString()}`);
-          
           const pageResponse = await fetchWithTimeout(
-            pageUrl.toString(),
-            { method: 'GET', headers: getCommonHeaders(cookieStr, ua) }
+            pageUrl.toString(), { method: 'GET', headers: getCommonHeaders(cookieStr, ua) }
           );
           
           if (!pageResponse.ok) {
             throw new Error(`Failed to fetch page ${pageNum}: ${pageResponse.status} ${pageResponse.statusText}`);
           }
-          
           const pageHtml = await pageResponse.text();
           const $$ = cheerio.load(pageHtml);
           
           // URL 타입에 따라 다른 파싱 로직 적용
           const parsedResults = isSearch ? parseSearchPage($$) : parseAreaPage($$);
           logger.debug(`페이지 ${pageNum} 파싱 완료, ${parsedResults.length}개 항목 추가`);
-          
           results.push(...parsedResults);
           
           // 과도한 요청 방지를 위한 지연
@@ -243,19 +231,14 @@ export const crawlAlbamonFromUrls = async (req, res) => {
     
     // 중복 제거 로직 추가
     logger.debug(`중복 제거 전 항목 수: ${results.length}`);
-    
-    // 중복 제거를 위한 Set 객체 (주소+업체명 또는 주소+공고제목이 같은 경우 중복으로 판단)
     const uniqueKeys = new Set();
     const uniqueResults = [];
     
     for (const item of results) {
-      // 주소+업체명과 주소+공고제목으로 중복 키 생성
       const addressCompanyKey = `${item.address}|${item.companyName}`.toLowerCase();
       const addressTitleKey = `${item.address}|${item.jobTitle}`.toLowerCase();
       
-      // 중복 체크
       if (!uniqueKeys.has(addressCompanyKey) && !uniqueKeys.has(addressTitleKey)) {
-        // 중복 아님 - 결과에 추가하고 키를 Set에 저장
         uniqueResults.push(item);
         uniqueKeys.add(addressCompanyKey);
         uniqueKeys.add(addressTitleKey);
@@ -266,181 +249,9 @@ export const crawlAlbamonFromUrls = async (req, res) => {
     
     logger.debug(`중복 제거 후 항목 수: ${uniqueResults.length}`);
     logger.debug(`총 ${results.length - uniqueResults.length}개 중복 항목 제거됨`);
-    
     res.json({ success: true, data: uniqueResults });
   } catch (error) {
     logger.error(`크롤링 중 예외 발생: ${error.message}`);
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// 상세 페이지 크롤링 함수 수정
-const crawlDetailPageById = async (id) => {
-    const url = `https://www.albamon.com/jobs/detail/${id}`;
-    
-    logger.debug(`ID ${id} 상세 페이지 크롤링 시작`);
-    
-    // 쿠키 로드
-    let cookieData;
-    try {
-      // 쿠키 및 UA 로드
-      const { ua, cookieStr, cookies } = await loadAlbamonUAandCookies();
-      cookieData = { ua, cookies };
-      logger.debug(`ID ${id} 크롤링을 위한 쿠키 로드 성공`);
-    } catch (cookieError) {
-      logger.error(`쿠키 로드 중 오류: ${cookieError.message}`);
-    }
-    
-    const browser = await chromium.launch({ headless: false }); // 실제 작동 시에는 headless: true로 변경
-    const context = await browser.newContext({
-      userAgent: cookieData?.ua // 사용자 에이전트 설정
-    });
-    
-    // 쿠키 설정 (로그인 상태 유지)
-    if (cookieData?.cookies) {
-      await context.addCookies(cookieData.cookies);
-      logger.debug(`브라우저에 쿠키 적용됨 (${cookieData.cookies.length}개)`);
-    }
-    
-    const page = await context.newPage();
-  
-    try {
-      logger.debug(`URL로 이동: ${url}`);
-      await page.goto(url, { timeout: 60000 });
-      await page.waitForLoadState('networkidle');
-  
-      // 로그인 상태 확인
-      const isLoggedIn = await page.evaluate(() => {
-        return document.body.textContent.includes('로그아웃') || 
-               !document.body.textContent.includes('로그인');
-      });
-      
-      if (!isLoggedIn) {
-        logger.warn(`ID ${id} 크롤링: 로그인 상태가 아님`);
-      } else {
-        logger.debug(`ID ${id} 크롤링: 로그인 상태 확인됨`);
-      }
-  
-      const html = await page.content();
-      const $ = cheerio.load(html);
-  
-      const companyName = $('div.company-info strong').text().trim() || '';
-      const address = $('p.detail-recruit-area__address').text().replace('복사', '').trim() || '';
-  
-      // iframe 접근하여 전화번호, 담당자 추출
-      let phone = '';
-      let contactPerson = '';
-  
-      const iframeElement = await page.$('iframe[title="담당자 정보"]');
-      if (iframeElement) {
-        logger.debug(`ID ${id} iframe 요소 발견`);
-        const frame = await iframeElement.contentFrame();
-        if (frame) {
-          try {
-            // 타임아웃 증가 및 폴링 간격 조정
-            await frame.waitForSelector('dt:has-text("전화") + dd div', { 
-              timeout: 10000,
-              polling: 500
-            });
-            
-            const phoneNumbers = await frame.$$eval(
-              'dt:has-text("전화") + dd div',
-              els => els.map(el => el.textContent.trim())
-            );
-            
-            logger.debug(`ID ${id} 전화번호 추출: ${phoneNumbers.length}개 발견`);
-            phone = phoneNumbers.find(num => num.startsWith('010')) || phoneNumbers[0] || '';
-  
-            // 담당자 정보 추출
-            try {
-              contactPerson = await frame.$eval(
-                'dt:has-text("담당자") + dd',
-                el => el.textContent.trim()
-              );
-              logger.debug(`ID ${id} 담당자 추출: ${contactPerson}`);
-            } catch (personError) {
-              logger.warn(`ID ${id} 담당자 정보 추출 실패: ${personError.message}`);
-              
-              // 대체 선택자 시도
-              try {
-                const dtElements = await frame.$$('dt');
-                for (const dt of dtElements) {
-                  const text = await dt.textContent();
-                  if (text.includes('담당자')) {
-                    const dd = await dt.$eval('+ dd', el => el.textContent.trim());
-                    contactPerson = dd;
-                    logger.debug(`ID ${id} 담당자 추출(대체): ${contactPerson}`);
-                    break;
-                  }
-                }
-              } catch (altError) {
-                logger.warn(`ID ${id} 대체 담당자 정보 추출도 실패: ${altError.message}`);
-              }
-            }
-          } catch (frameError) {
-            logger.warn(`ID ${id} iframe 내 정보 추출 중 오류: ${frameError.message}`);
-            
-            // 디버깅을 위한 스크린샷 캡처 (실제 운영시 비활성화)
-            try {
-              await frame.screenshot({ path: `debug-frame-${id}.png` });
-              logger.debug(`ID ${id} iframe 스크린샷 저장됨`);
-            } catch (screenshotError) {
-              logger.warn(`스크린샷 저장 실패: ${screenshotError.message}`);
-            }
-          }
-        } else {
-          logger.warn(`ID ${id} iframe의 contentFrame을 가져오지 못함`);
-        }
-      } else {
-        logger.warn(`ID ${id} iframe 요소를 찾지 못함`);
-      }
-  
-      await browser.close();
-      
-      return {
-        success: true,
-        companyName,
-        address,
-        phone,
-        contactPerson,
-        detailLink: url
-      };
-    } catch (error) {
-      try {
-        // 오류 디버깅을 위한 스크린샷
-        await page.screenshot({ path: `error-page-${id}.png` });
-        logger.debug(`ID ${id} 오류 페이지 스크린샷 저장됨`);
-      } catch (screenshotError) {
-        logger.warn(`스크린샷 저장 실패: ${screenshotError.message}`);
-      }
-      
-      await browser.close();
-      logger.error(`ID ${id} 상세 정보 크롤링 중 오류: ${error.message}`);
-      throw error;
-    }
-  };
-
-// 상세 페이지 크롤링 - API 엔드포인트용
-export const crawlAlbamonById = async (req, res) => {
-  const { id } = req.params;
-  
-  logger.debug(`ID로 상세 정보 조회 시작: ${id}`);
-  
-  try {
-    const detailData = await crawlDetailPageById(id);
-    
-    const data = {
-      companyName: detailData.companyName,
-      address: detailData.address,
-      phone: detailData.phone,
-      name: detailData.contactPerson,
-      detailLink: detailData.detailLink,
-    };
-    
-    logger.debug(`ID ${id} 상세 정보 파싱 완료`);
-    res.json({ success: true, data });
-  } catch (error) {
-    logger.error(`ID ${id} 상세 정보 파싱 중 오류: ${error}`);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -453,358 +264,620 @@ export const processBusinessContacts = async (req, res) => {
 
 // 여러 ID를 한 번의 로그인 세션으로 처리하는 함수
 export const batchProcessJobIds = async (req, res) => {
-  const { businesses } = req.body;
-  
-  if (!Array.isArray(businesses) || businesses.length === 0) {
-    return res.status(400).json({
-      success: false,
-      message: "유효한 businesses 배열이 필요합니다"
+    const { businesses } = req.body;
+    
+    if (!Array.isArray(businesses) || businesses.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "유효한 businesses 배열이 필요합니다"
+      });
+    }
+    
+    logger.debug(`총 ${businesses.length}개 공고 처리 시작`);
+    
+    // 초기 진행 상태 전송
+    io.emit('progressUpdate', {
+      completed: 0,
+      total: businesses.length,
+      percent: 0
     });
-  }
-  
-  logger.debug(`총 ${businesses.length}개 공고 처리 시작`);
-  
-  try {
-    // 로그인 세션 가져오기
-    const { browser, context } = await getLoggedInSession();
-    logger.debug('로그인 세션 생성 성공');
     
-    const results = [];
-    const errors = [];
-    
-    // 병렬 처리를 위한 설정
-    const concurrency = 5; // 동시에 처리할 최대 페이지 수
-    const delay = 500; // 각 ID 처리 사이의 지연 시간 (ms)
-    
-    // 작은 배치로 나누어 처리
-    for (let i = 0; i < businesses.length; i += concurrency) {
-      const batch = businesses.slice(i, i + concurrency);
-      logger.debug(`배치 처리: ${i+1}-${Math.min(i+concurrency, businesses.length)}/${businesses.length}`);
+    try {
+      // 크롤링 준비 - 중복 제거된 공고 ID 목록 생성
+      logger.debug('크롤링 준비: 중복 제거 및 유효성 검증');
       
-      // 현재 배치의 모든 작업을 병렬로 처리
-      const batchPromises = batch.map(async (business, index) => {
-        // 과도한 동시 요청 방지를 위한 지연
-        await new Promise(r => setTimeout(r, index * delay));
+      // 유효한 jobId 목록 구성
+      const uniqueJobIds = new Set();
+      const jobsToProcess = [];
+      
+      for (const business of businesses) {
+        const jobId = business.jobId || business.id;
         
-        try {
-          const jobId = business.jobId || business.id;
-          
-          if (!jobId) {
-            return { business, error: "유효한 ID가 없습니다" };
-          }
-          
-          logger.debug(`ID ${jobId} 처리 시작`);
-          
-          const existingCustomer = await CustomerInfo.findOne({
-            where: { posting_id: jobId },
-            include: [{
-              model: ContactInfo,
-              attributes: ['phone_number', 'contact_person']
-            }]
+        if (!jobId) {
+          logger.warn('유효한 ID가 없는 비즈니스 항목 무시');
+          continue;
+        }
+        
+        // 중복된 jobId는 처리하지 않음
+        if (uniqueJobIds.has(jobId)) {
+          logger.debug(`중복 jobId 발견, 스킵: ${jobId}`);
+          continue;
+        }
+        
+        // 이미 저장된 정보가 있는지 확인
+        const existingCustomer = await CustomerInfo.findOne({
+          where: { posting_id: jobId },
+          include: [{
+            model: ContactInfo,
+            attributes: ['phone_number', 'contact_person']
+          }]
+        });
+        
+        // 이미 연락처 정보가 있는 경우 추가 크롤링 불필요
+        if (existingCustomer?.ContactInfos?.length > 0 && existingCustomer.ContactInfos[0].phone_number) {
+          logger.debug(`ID ${jobId}: 기존 정보 발견, 크롤링 생략`);
+          continue;
+        }
+        
+        // 중복 체크를 위해 추가 (같은 주소와 제목/업체명이 있는지)
+        const title = business.postTitle || business.jobTitle || '';
+        const companyName = business.businessName || business.companyName || '';
+        const address = business.address || '';
+        
+        if (address && (title || companyName)) {
+          const duplicateCustomer = await CustomerInfo.findOne({
+            where: {
+              [Op.or]: [
+                { address, title },
+                { address, company_name: companyName }
+              ]
+            }
           });
           
-          if (existingCustomer?.ContactInfos?.length > 0) {
-            return {
-              success: true,
-              data: {
-                jobId,
-                companyName: existingCustomer.company_name,
-                phone: existingCustomer.ContactInfos[0].phone_number,
-                contactPerson: existingCustomer.ContactInfos[0].contact_person,
-                address: existingCustomer.address,
-                fromCache: true
-              }
-            };
+          if (duplicateCustomer) {
+            logger.debug(`중복된 업체 발견 (주소+제목 또는 주소+업체명): ${address}, ${title || companyName}`);
+            continue;
           }
+        }
+        
+        // 중복 없음, 크롤링 대상에 추가
+        uniqueJobIds.add(jobId);
+        jobsToProcess.push({
+          jobId,
+          title,
+          companyName,
+          address
+        });
+      }
+      
+      logger.debug(`크롤링할 고유 공고 ID 수: ${jobsToProcess.length}`);
+      
+      // 데이터 수집 단계: 최종 저장할 데이터 목록
+      const customersToSave = []; // 최종 저장할 고객 정보 목록
+      const results = [];
+      const errors = [];
+      
+      if (jobsToProcess.length > 0) {
+        // 로그인 세션 생성 
+        const { browser, context } = await getLoggedInSession();
+        logger.debug('로그인 세션 생성 성공');
+        
+        // 병렬 처리를 위한 설정
+        const concurrency = 6; // 동시에 처리할 최대 페이지 수
+        const delay = 300; // 각 ID 처리 사이의 지연 시간 (ms)
+        
+        let completedCount = 0;
+        
+        // 작은 배치로 나누어 처리
+        for (let i = 0; i < jobsToProcess.length; i += concurrency) {
+          const batch = jobsToProcess.slice(i, i + concurrency);
+          logger.debug(`배치 크롤링: ${i+1}-${Math.min(i+concurrency, jobsToProcess.length)}/${jobsToProcess.length}`);
           
-          const page = await context.newPage();
-          const url = `https://www.albamon.com/jobs/detail/${jobId}`;
-          
-          try {
-            await page.goto(url, { timeout: 30000 });
-            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-            
-            const html = await page.content();
-            const $ = cheerio.load(html);
-            
-            const companyName = $('div.company-info strong').text().trim() || business.businessName || business.companyName || null;
-            const address = $('p.detail-recruit-area__address').text().replace('복사', '').trim() || business.address || null;
-            
-            let phone = null;
-            let contactPerson = null;
-            
-            const iframeElement = await page.$('iframe[title="담당자 정보"]');
-            if (iframeElement) {
-              const frame = await iframeElement.contentFrame();
-              if (frame) {
+            // 현재 배치의 모든 작업을 병렬로 처리
+            const batchPromises = batch.map(async (item, index) => {
+                // 과도한 동시 요청 방지를 위한 지연
+                await new Promise(r => setTimeout(r, index * delay));
+                
+                const { jobId, title, companyName, address } = item;
+                
                 try {
-                  await frame.waitForTimeout(500); // iframe 로드 대기
-                  await frame.waitForSelector('dt:has-text("전화") + dd div', { timeout: 5000 }).catch(() => {});
-                  const phoneElements = await frame.$$('dt:has-text("전화") + dd div');
-                  
-                  if (phoneElements.length > 0) {
-                    const phoneNumbers = await Promise.all(
-                      phoneElements.map(el => frame.evaluate(node => node.textContent.trim(), el))
-                    );
-                    phone = phoneNumbers.find(num => num.startsWith('010')) || phoneNumbers[0] || null;
-                  }
-                  
-                  const personElement = await frame.$('dt:has-text("담당자") + dd');
-                  if (personElement) {
-                    contactPerson = await frame.evaluate(node => node.textContent.trim(), personElement);
-                  }
-                } catch (frameErr) {
-                  logger.warn(`ID ${jobId}: iframe 처리 중 오류: ${frameErr.message}`);
+                logger.debug(`ID ${jobId} 크롤링 시작`);
+                
+                const page = await context.newPage();
+                const url = `https://www.albamon.com/jobs/detail/${jobId}`;
+                
+                try {
+                    await page.goto(url, { timeout: 30000 });
+                    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                    
+                    const html = await page.content();
+                    const $ = cheerio.load(html);
+                    
+                    // 상세 페이지에서 회사명, 주소 정보 추출 
+                    const detailCompanyName = $('div.company-info strong').text().trim();
+                    const detailAddress = $('p.detail-recruit-area__address').text().replace('복사', '').trim();
+                    
+                    // 전화번호, 담당자 정보 추출
+                    let phone = null;
+                    let contactPerson = null;
+                    
+                    const iframeElement = await page.$('iframe[title="담당자 정보"]');
+                    if (iframeElement) {
+                    const frame = await iframeElement.contentFrame();
+                    if (frame) {
+                        try {
+                        await frame.waitForTimeout(500); // iframe 로드 대기
+                        await frame.waitForSelector('dt:has-text("전화") + dd div', { timeout: 5000 }).catch(() => {});
+                        const phoneElements = await frame.$$('dt:has-text("전화") + dd div');
+                        
+                        if (phoneElements.length > 0) {
+                            const phoneNumbers = await Promise.all(
+                            phoneElements.map(el => frame.evaluate(node => node.textContent.trim(), el))
+                            );
+                            phone = phoneNumbers.find(num => num.startsWith('010')) || phoneNumbers[0] || null;
+                            
+                            // 안심번호 필터링 로직 
+                            if (phone && phone.includes('안심번호')) {
+                            logger.debug(`ID ${jobId}: 안심번호 발견: "${phone}", 저장 건너뜀`);
+                            await page.close();
+                            
+                            // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
+                            const existingCustomer = await CustomerInfo.findOne({
+                                where: { posting_id: jobId }
+                            });
+                            
+                            if (existingCustomer) {
+                                logger.debug(`ID ${jobId}: 안심번호로 인해 DB에서 삭제`);
+                                await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
+                                await existingCustomer.destroy();
+                            }
+                            
+                            return {
+                                success: true,
+                                data: {
+                                jobId,
+                                filtered: true,
+                                filterReason: `안심번호 필터링: "${phone}"`
+                                }
+                            };
+                            }
+                        }
+                        
+                        const personElement = await frame.$('dt:has-text("담당자") + dd');
+                        if (personElement) {
+                            contactPerson = await frame.evaluate(node => node.textContent.trim(), personElement);
+                        }
+                        } catch (frameErr) {
+                        logger.warn(`ID ${jobId}: iframe 처리 중 오류: ${frameErr.message}`);
+                        }
+                    }
+                    }
+                    
+                    await page.close();
+                    
+                    // 특정 담당자 키워드가 있는 경우 필터링
+                    const filterKeywords = ['채용담당자', '인사담당자', '담당자', '매니저', '담당채용자', '점장', '채용담당', '매니져', '인사담당'];
+                    
+                    if (contactPerson && filterKeywords.some(keyword => contactPerson.includes(keyword))) {
+                    logger.debug(`ID ${jobId}: 필터링된 담당자 키워드 발견: "${contactPerson}", 저장 건너뜀`);
+                    
+                    // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
+                    const existingCustomer = await CustomerInfo.findOne({
+                        where: { posting_id: jobId }
+                    });
+                    
+                    if (existingCustomer) {
+                        logger.debug(`ID ${jobId}: 담당자 키워드로 인해 DB에서 삭제`);
+                        await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
+                        await existingCustomer.destroy();
+                    }
+                    
+                    return {
+                        success: true,
+                        data: {
+                        jobId,
+                        filtered: true,
+                        filterReason: `담당자 키워드 필터링: "${contactPerson}"`
+                        }
+                    };
+                    }
+                    
+                    // 전화번호가 없는 경우 필터링
+                    if (!phone || phone === '') {
+                    logger.debug(`ID ${jobId}: 전화번호 없음, 저장 건너뜀`);
+                    
+                    // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
+                    const existingCustomer = await CustomerInfo.findOne({
+                        where: { posting_id: jobId }
+                    });
+                    
+                    if (existingCustomer) {
+                        logger.debug(`ID ${jobId}: 전화번호 없어서 DB에서 삭제`);
+                        await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
+                        await existingCustomer.destroy();
+                    }
+                    
+                    return {
+                        success: true,
+                        data: {
+                        jobId, 
+                        filtered: true,
+                        filterReason: '전화번호 없음'
+                        }
+                    };
+                    }
+                    
+                    // 모든 검증 통과 후 데이터를 수집합니다 (즉시 DB 저장하지 않음)
+                    // 기존 고객 정보가 있는지 확인
+                    const existingCustomer = await CustomerInfo.findOne({
+                        where: { posting_id: jobId }
+                    });
+                    
+                    if (existingCustomer) {
+                        // 기존 고객 정보가 있으면 업데이트를 위한 객체 추가
+                        customersToSave.push({
+                            type: 'update',
+                            customer: {
+                                id: existingCustomer.id,
+                                posting_id: jobId,
+                                title: title || detailCompanyName,
+                                company_name: detailCompanyName || companyName,
+                                address: detailAddress || address
+                            },
+                            contact: {
+                                customer_id: existingCustomer.id,
+                                phone_number: phone,
+                                contact_person: contactPerson || ''
+                            }
+                        });
+                        
+                        logger.debug(`ID ${jobId}: 업데이트할 정보 수집 완료`);
+                    } else {
+                        // 신규 정보 생성을 위한 객체 추가
+                        customersToSave.push({
+                            type: 'create',
+                            customer: {
+                                posting_id: jobId,
+                                title: title || detailCompanyName,
+                                company_name: detailCompanyName || companyName,
+                                address: detailAddress || address
+                            },
+                            contact: {
+                                phone_number: phone,
+                                contact_person: contactPerson || ''
+                            }
+                        });
+                        
+                        logger.debug(`ID ${jobId}: 신규 정보 수집 완료`);
+                    }
+                    
+                    return {
+                        success: true,
+                        data: {
+                            jobId,
+                            companyName: detailCompanyName || companyName,
+                            address: detailAddress || address,
+                            phone,
+                            contactPerson: contactPerson || '',
+                            fromCache: false,
+                            filtered: false
+                        }
+                    };
+                    
+                } catch (pageError) {
+                    await page.close();
+                    logger.error(`ID ${jobId}: 페이지 처리 중 오류: ${pageError.message}`);
+                    
+                    return {
+                    success: false,
+                    data: {
+                        jobId,
+                        error: pageError.message
+                    }
+                    };
                 }
-              }
-            }
-            
-            await page.close();
-            
-            // 특정 담당자 키워드가 있는 경우 필터링
-            const filterKeywords = ['채용담당자', '인사담당자', '담당자', '매니저', '담당채용자', '점장'];
-            
-            if (contactPerson && filterKeywords.some(keyword => contactPerson.includes(keyword))) {
-              logger.debug(`ID ${jobId}: 필터링된 담당자 키워드 발견: "${contactPerson}" - 데이터 저장 건너뜀`);
-              
-              // 이미 존재하는 고객 정보가 있다면 삭제
-              if (existingCustomer) {
-                // 먼저 관련 연락처 정보 삭제
-                await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
-                // 고객 정보 삭제
-                await existingCustomer.destroy();
-                logger.debug(`ID ${jobId}: 필터링으로 인해 기존 고객 및 연락처 정보 삭제됨`);
-              }
-              
-              return {
-                success: true,
-                data: {
-                  jobId,
-                  filtered: true,
-                  filterReason: `담당자 키워드 필터링: "${contactPerson}"` 
+                } catch (error) {
+                logger.error(`ID ${jobId}: 처리 중 오류: ${error.message}`);
+                return { success: false, error: error.message, jobId };
+                } finally {
+                // 처리 완료 후 진행 상태 업데이트
+                completedCount++;
+                const percent = Math.round((completedCount / jobsToProcess.length) * 100);
+                
+                io.emit('progressUpdate', {
+                    completed: completedCount,
+                    total: jobsToProcess.length, 
+                    percent: percent
+                });
+                
+                logger.debug(`진행 상태: ${completedCount}/${jobsToProcess.length} (${percent}%)`);
                 }
-              };
+            });
+          
+          // 현재 배치의 모든 결과 수집
+          const batchResults = await Promise.all(batchPromises);
+          
+          // 결과 및 오류 분류
+          batchResults.forEach(result => {
+            if (result.success) {
+              results.push(result.data);
+            } else {
+              errors.push(result);
             }
+          });
+          
+          // 다음 배치 전 지연 (서버 부하 방지)
+          if (i + concurrency < jobsToProcess.length) {
+            await randomDelay(1, 2);
+          }
+        }
+        
+        await browser.close();
+        logger.debug('브라우저 세션 종료됨');
+      }
+      
+      // 크롤링이 모두 완료된 후 한 번에 데이터 저장
+      logger.debug(`크롤링 완료: ${customersToSave.length}개의 유효한 고객 정보 수집됨`);
+      logger.debug('일괄 저장 작업 시작...');
+      
+      // Sequelize 트랜잭션 생성
+      const t = await sequelize.transaction();
+      
+      try {
+        // 저장된 고객 정보 ID 추적
+        const savedCustomerIds = [];
+        
+        // 한 번에 모든 고객 정보 저장
+        for (const item of customersToSave) {
+          if (item.type === 'update') {
+            // 기존 고객 정보 업데이트
+            await CustomerInfo.update(
+              {
+                title: item.customer.title,
+                company_name: item.customer.company_name,
+                address: item.customer.address
+              },
+              {
+                where: { id: item.customer.id },
+                transaction: t
+              }
+            );
             
-            let customer = existingCustomer;
-            if (!customer) {
-              customer = await CustomerInfo.create({
-                posting_id: jobId,
-                title: business.postTitle || business.jobTitle || '',
-                company_name: companyName,
-                address: address
-              });
-            }
-            
-            await ContactInfo.create({
-              customer_id: customer.id,
-              phone_number: phone,
-              contact_person: contactPerson
+            // 연락처 정보 업데이트 또는 생성
+            const existingContact = await ContactInfo.findOne({
+              where: { customer_id: item.customer.id },
+              transaction: t
             });
             
-            return {
-              success: true,
-              data: {
-                jobId,
-                companyName,
-                phone,
-                contactPerson,
-                address,
-                fromCache: false
-              }
-            };
-          } catch (pageError) {
-            await page.close();
-            throw pageError;
+            if (existingContact) {
+              await ContactInfo.update(
+                {
+                  phone_number: item.contact.phone_number,
+                  contact_person: item.contact.contact_person
+                },
+                {
+                  where: { customer_id: item.customer.id },
+                  transaction: t
+                }
+              );
+            } else {
+              await ContactInfo.create(
+                {
+                  customer_id: item.customer.id,
+                  phone_number: item.contact.phone_number,
+                  contact_person: item.contact.contact_person
+                },
+                { transaction: t }
+              );
+            }
+            
+            savedCustomerIds.push(item.customer.id);
+            
+          } else if (item.type === 'create') {
+            // 신규 고객 정보 생성
+            const newCustomer = await CustomerInfo.create(
+              {
+                posting_id: item.customer.posting_id,
+                title: item.customer.title,
+                company_name: item.customer.company_name,
+                address: item.customer.address
+              },
+              { transaction: t }
+            );
+            
+            // 연락처 정보 생성
+            await ContactInfo.create(
+              {
+                customer_id: newCustomer.id,
+                phone_number: item.contact.phone_number,
+                contact_person: item.contact.contact_person
+              },
+              { transaction: t }
+            );
+            
+            savedCustomerIds.push(newCustomer.id);
           }
-        } catch (businessError) {
-          logger.error(`ID ${business.id || business.jobId}: 처리 중 오류: ${businessError.message}`);
-          return { business, error: businessError.message };
         }
-      });
-      
-      // 현재 배치의 모든 결과 수집
-      const batchResults = await Promise.all(batchPromises);
-      
-      // 결과 및 오류 분류
-      batchResults.forEach(result => {
-        if (result.success) {
-          results.push(result.data);
+        
+        // 연락처가 없는 고객 데이터 정리 작업 추가
+        logger.debug('연락처가 없는 고객 데이터 정리 작업 시작');
+        
+        // 연락처가 없는 고객 정보 찾기
+        const customersWithoutContacts = await CustomerInfo.findAll({
+          include: [{
+            model: ContactInfo,
+            required: false
+          }],
+          where: {
+            '$ContactInfos.id$': null
+          },
+          transaction: t
+        });
+        
+        if (customersWithoutContacts.length > 0) {
+          logger.debug(`연락처 없는 고객 데이터 ${customersWithoutContacts.length}개 발견, 삭제 시작`);
+          
+          // 연락처 없는 고객 정보 삭제
+          const customerIds = customersWithoutContacts.map(c => c.id);
+          const deletedCount = await CustomerInfo.destroy({
+            where: {
+              id: customerIds
+            },
+            transaction: t
+          });
+          
+          logger.debug(`연락처 없는 고객 데이터 ${deletedCount}개 삭제 완료`);
         } else {
-          errors.push(result);
+          logger.debug('연락처 없는 고객 데이터가 없습니다.');
         }
+        
+        // 모든 작업이 성공적으로 완료되면 트랜잭션 커밋
+        await t.commit();
+        logger.debug(`DB 저장 완료: ${savedCustomerIds.length}개 고객 정보 저장 성공`);
+        
+        // 트랜잭션 완료 후 네이버 플레이스 URL 비동기 처리 시작
+        if (savedCustomerIds.length > 0) {
+          logger.debug(`저장된 ${savedCustomerIds.length}개 고객의 네이버 플레이스 URL 처리 시작`);
+          
+          // 비동기로 처리하되 결과를 기다리지 않음 (응답 지연 방지)
+          batchProcessNaverPlaceUrls(savedCustomerIds)
+            .then(results => {
+              logger.debug(`네이버 플레이스 URL 처리 결과: ${JSON.stringify(results)}`);
+            })
+            .catch(err => {
+              logger.error(`네이버 플레이스 URL 처리 중 오류: ${err.message}`);
+            });
+        }
+        
+      } catch (dbError) {
+        // 오류 발생 시 트랜잭션 롤백
+        await t.rollback();
+        logger.error(`DB 저장 중 오류 발생, 모든 변경사항 롤백됨: ${dbError.message}`);
+        
+        return res.status(500).json({
+          success: false,
+          message: `데이터 저장 중 오류가 발생했습니다: ${dbError.message}`
+        });
+      }
+      
+      // 필터링 된 항목 수 계산
+      const filteredCount = results.filter(r => r.filtered).length;
+      // 성공적으로 저장된 항목 수 계산
+      const savedCount = results.filter(r => !r.filtered && !r.error).length;
+
+      // 최종 진행 상태 업데이트 (100% 완료)
+      io.emit('progressUpdate', {
+          completed: jobsToProcess.length,
+          total: jobsToProcess.length,
+          percent: 100
       });
       
-      // 다음 배치 전 지연 (서버 부하 방지)
-      if (i + concurrency < businesses.length) {
-        logger.debug(`다음 배치 처리 전 ${delay * 2}ms 대기`);
-        await randomDelay(1, 2);
-        }
-    }
-    
-    await browser.close();
-    logger.debug('브라우저 세션 종료됨');
-    
-    return res.json({
-      success: true,
-      totalProcessed: businesses.length,
-      successCount: results.length,
-      errorCount: errors.length,
-      data: results,
-      errors: errors.length > 0 ? errors : undefined
-    });
-    
-  } catch (error) {
-    logger.error(`배치 처리 중 오류 발생: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-// DB 조회 함수들
-
-// 모든 고객 정보 조회
-export const getAllCustomers = async (req, res) => {
-  try {
-    logger.debug('모든 고객 정보 조회 요청');
-    
-    const customers = await CustomerInfo.findAll({
-      include: [{
-        model: ContactInfo,
-        attributes: ['phone_number', 'contact_person']
-      }]
-    });
-    
-    return res.json({
-      success: true,
-      count: customers.length,
-      data: customers
-    });
-  } catch (error) {
-    logger.error(`고객 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-// 특정 고객 정보 조회 (ID 기준)
-export const getCustomerById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    logger.debug(`고객 ID ${id} 조회 요청`);
-    
-    const customer = await CustomerInfo.findByPk(id, {
-      include: [{
-        model: ContactInfo,
-        attributes: ['phone_number', 'contact_person']
-      }]
-    });
-    
-    if (!customer) {
-      logger.warn(`ID ${id}에 해당하는 고객 정보 없음`);
-      return res.status(404).json({
+      return res.json({
+          success: true,
+          totalRequested: businesses.length,
+          totalProcessed: jobsToProcess.length,
+          savedCount: savedCount,
+          filteredCount: filteredCount,
+          errorCount: errors.length,
+          cleanedCount: customersWithoutContacts.length, // 정리된 데이터 수 추가
+          data: results.filter(r => !r.filtered), // 필터링 되지 않은 결과만 반환
+          errors: errors.length > 0 ? errors : undefined
+      });
+        
+    } catch (error) {
+      // 오류 발생 시에도 진행 상태 업데이트
+      io.emit('progressUpdate', {
+        completed: 0,
+        total: businesses.length,
+        percent: 0,
+        error: error.message
+      });
+      
+      logger.error(`배치 처리 중 오류 발생: ${error.message}`);
+      return res.status(500).json({
         success: false,
-        message: '해당 ID의 고객 정보를 찾을 수 없습니다'
+        message: error.message
       });
     }
-    
-    return res.json({
-      success: true,
-      data: customer
-    });
-  } catch (error) {
-    logger.error(`고객 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
+  };
 
-// 특정 공고 ID로 고객 정보 조회
-export const getCustomerByPostingId = async (req, res) => {
-  try {
-    const { postingId } = req.params;
-    logger.debug(`공고 ID ${postingId} 조회 요청`);
-    
-    const customer = await CustomerInfo.findOne({
-      where: { posting_id: postingId },
-      include: [{
-        model: ContactInfo,
-        attributes: ['phone_number', 'contact_person']
-      }]
-    });
-    
-    if (!customer) {
-      logger.warn(`공고 ID ${postingId}에 해당하는 고객 정보 없음`);
-      return res.status(404).json({
+  export const getCustomersWithContacts = async (req, res) => {
+    try {
+      logger.debug('고객 및 연락처 통합 데이터 조회 요청');
+      
+      // 페이지네이션 파라미터 처리
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.pageSize) || 50;
+      const offset = (page - 1) * limit;
+      
+      // 정렬 처리
+      let order;
+      if (req.query.sortBy === 'company') {
+        order = [['company_name', 'ASC']];
+      } else if (req.query.sortBy === 'address') {
+        order = [['address', 'ASC']]; 
+      } else {
+        // 기본값: 최신순 (recent 파라미터 포함)
+        order = [['created_at', 'DESC']];
+      }
+      
+      // 검색 필터링 
+      const filters = {};
+      if (req.query.search) {
+        filters[Op.or] = [
+          { company_name: { [Op.like]: `%${req.query.search}%` } },
+          { title: { [Op.like]: `%${req.query.search}%` } },
+          { address: { [Op.like]: `%${req.query.search}%` } }
+        ];
+      }
+      
+      // CustomerInfo와 연결된 모든 ContactInfo 조회
+      const result = await CustomerInfo.findAndCountAll({
+        where: filters,
+        limit,
+        offset,
+        include: [{
+          model: ContactInfo,
+          required: false
+        }],
+        distinct: true,
+        order: order
+      });
+      
+      // 프론트엔드가 원하는 형식으로 변환
+      const formattedData = result.rows.map(customer => {
+        const plainCustomer = customer.get({ plain: true });
+        return {
+          id: plainCustomer.id,
+          posting_id: plainCustomer.posting_id,
+          title: plainCustomer.title,
+          company_name: plainCustomer.company_name,
+          address: plainCustomer.address || '',
+          naverplace_url: plainCustomer.naverplace_url || null,
+          contacts: plainCustomer.ContactInfos ? plainCustomer.ContactInfos.map(contact => ({
+            id: contact.id,
+            phone_number: contact.phone_number || '',
+            contact_person: contact.contact_person || ''
+          })) : []
+        };
+      });
+      
+      return res.json({
+        success: true,
+        total: result.count,
+        page,
+        limit,
+        totalPages: Math.ceil(result.count / limit),
+        data: formattedData
+      });
+    } catch (error) {
+      logger.error(`고객 및 연락처 통합 데이터 조회 중 오류: ${error.message}`);
+      console.error('스택 트레이스:', error.stack); // 디버깅을 위한 스택 트레이스 추가
+      return res.status(500).json({
         success: false,
-        message: '해당 공고 ID의 고객 정보를 찾을 수 없습니다'
+        message: error.message
       });
     }
-    
-    return res.json({
-      success: true,
-      data: customer
-    });
-  } catch (error) {
-    logger.error(`고객 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
+  };
 
-// 특정 공고 ID로 연락처 정보 모두 조회
-export const getContactsByPostingId = async (req, res) => {
-  try {
-    const { postingId } = req.params;
-    logger.debug(`공고 ID ${postingId}의 모든 연락처 조회 요청`);
-    
-    // 수정: 올바른 조회 방식으로 변경
-    const customer = await CustomerInfo.findOne({
-      where: { posting_id: postingId }
-    });
-    
-    if (!customer) {
-      logger.warn(`공고 ID ${postingId}에 해당하는 고객 정보 없음`);
-      return res.status(404).json({
-        success: false,
-        message: '해당 공고 ID의 고객 정보를 찾을 수 없습니다'
-      });
-    }
-    
-    const contacts = await ContactInfo.findAll({
-      where: { customer_id: customer.id },
-      include: [{
-        model: CustomerInfo,
-        attributes: ['title', 'company_name', 'address']
-      }]
-    });
-    
-    if (!contacts || contacts.length === 0) {
-      logger.warn(`고객 ID ${customer.id}에 해당하는 연락처 정보 없음`);
-      return res.status(404).json({
-        success: false,
-        message: '해당 공고 ID의 연락처 정보를 찾을 수 없습니다'
-      });
-    }
-    
-    return res.json({
-      success: true,
-      count: contacts.length,
-      data: contacts
-    });
-  } catch (error) {
-    logger.error(`연락처 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
+  

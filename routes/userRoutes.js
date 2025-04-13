@@ -233,7 +233,7 @@ function getCrawlDate(dateTime) {
  */
 router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
   try {
-    const { userId, placeId } = req.query;
+    const { userId, placeId, keyword } = req.query;
 
     if (!userId || !placeId) {
       return res.status(400).json({ 
@@ -242,7 +242,7 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       });
     }
     
-    logger.info(`[keyword-ranking-details] 요청 시작: userId=${userId}, placeId=${placeId}`);
+    logger.info(`[keyword-ranking-details] 요청 시작: userId=${userId}, placeId=${placeId}, keyword=${keyword || '전체'}`);
 
     // (1) UserPlaceKeyword에서 해당 사용자-업체에 연결된 모든 키워드 ID 조회
     const userPlaceKeywords = await UserPlaceKeyword.findAll({
@@ -268,20 +268,38 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       keywordMap[k.id] = k.keyword;
     });
 
+    // keyword 파라미터가 있으면 해당 키워드만 필터링
+    let filteredKeywordIds = keywordIds;
+    if (keyword) {
+      // 키워드 문자열로 검색하여 매칭되는 키워드 ID만 필터링
+      filteredKeywordIds = keywords
+        .filter(k => k.keyword.includes(keyword))
+        .map(k => k.id);
+      
+      if (filteredKeywordIds.length === 0) {
+        logger.info(`[keyword-ranking-details] 일치하는 키워드 없음: keyword=${keyword}`);
+        return res.json({ success: true, data: [] });
+      }
+
+      logger.info(`[keyword-ranking-details] 키워드 필터링: "${keyword}" 검색어로 ${filteredKeywordIds.length}개 키워드 매칭됨`);
+    }
+
     // 키워드 목록 로깅
-    logger.info(`[keyword-ranking-details] 조회할 키워드 목록 (총 ${keywordIds.length}개):`);
-    keywords.forEach(k => {
-      logger.info(`- 키워드: "${k.keyword}" (ID: ${k.id})`);
-    });
+    logger.info(`[keyword-ranking-details] 조회할 키워드 목록 (총 ${filteredKeywordIds.length}개):`);
+    keywords
+      .filter(k => filteredKeywordIds.includes(k.id))
+      .forEach(k => {
+        logger.info(`- 키워드: "${k.keyword}" (ID: ${k.id})`);
+      });
 
     // (3) 3개월 전부터 현재까지 범위 계산
     const threeMonthsAgo = dayjs().subtract(3, "month").startOf("day").toDate();
     const now = new Date();
 
-    // (4) 모든 키워드 ID에 대한 BasicCrawlResult 조회
+    // (4) 필터링된 키워드 ID에 대한 BasicCrawlResult 조회
     const basicResults = await KeywordBasicCrawlResult.findAll({
       where: {
-        keyword_id: { [Op.in]: keywordIds },
+        keyword_id: { [Op.in]: filteredKeywordIds },
         ranking: { [Op.not]: null },
         last_crawled_at: {
           [Op.between]: [threeMonthsAgo, now]
@@ -297,7 +315,7 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
     });
     
     // BasicResults에서 키워드별 데이터 개수 계산
-    basicResults.forEach(result => {
+    basicResults.forEach(result => {ㅊ
       if (keywordDataCounts[result.keyword_id] !== undefined) {
         keywordDataCounts[result.keyword_id]++;
       }
