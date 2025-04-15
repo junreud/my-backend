@@ -18,9 +18,6 @@ const getFrontendUrl = () => {
     : process.env.FRONTEND_URL || 'https://lakabe.com';
 };
 
-// 라우트 등록 디버그 로그
-console.log('[AUTH_ROUTES] 인증 라우트 등록 시작');
-
 const router = express.Router();
 
 router.post('/login', (req, res, next) => {
@@ -187,7 +184,5 @@ router.post('/checkEmailAndPassword', authController.checkEmailAndPassword);
 router.post("/link-accounts", authController.linkAccounts);
 router.post('/addinfo', authController.addInfo);
 router.post('/refresh', authController.refresh);
-
-console.log('[AUTH_ROUTES] 인증 라우트 등록 완료');
 
 export default router;

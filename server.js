@@ -28,15 +28,11 @@ if (process.env.NODE_ENV === 'development') {
 
 // 허용된 도메인 정의
 const allowedOrigins = [
-  // 개발 환경
   'http://localhost:3000',
   'https://localhost:3000',
-  // 배포 환경
-  FRONTEND_URL,
+  process.env.FRONTEND_URL,
   'https://lakabe.com',
-  'http://www.lakabe.com',
   'https://www.lakabe.com',
-  'https://api.lakabe.com'
 ];
 
 // Socket.IO 초기화

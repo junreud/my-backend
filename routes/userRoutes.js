@@ -315,7 +315,7 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
     });
     
     // BasicResults에서 키워드별 데이터 개수 계산
-    basicResults.forEach(result => {ㅊ
+    basicResults.forEach(result => {
       if (keywordDataCounts[result.keyword_id] !== undefined) {
         keywordDataCounts[result.keyword_id]++;
       }
