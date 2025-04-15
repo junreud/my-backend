@@ -41,6 +41,12 @@ export async function issueTokens(userId) {
 // [2] Refresh 요청
 // ------------------------------------------------------------
 export async function refresh(req, res) {
+  console.log("===== REFRESH 요청 =====");
+  console.log("쿠키 존재 여부:", !!req.cookies);
+  console.log("모든 쿠키:", req.cookies);
+  console.log("refreshToken 쿠키:", req.cookies.refreshToken);
+  console.log("요청 헤더:", req.headers);
+  
   try {
     // 쿠키에서 리프레시 토큰 추출
     const refreshToken = req.cookies.refreshToken;
@@ -68,6 +74,12 @@ export async function refresh(req, res) {
     return res.status(500).json({ message: '서버 에러' });
   }
 }
+
+// ------------------------------------------------------------
+// 환경 설정 헬퍼 함수
+// ------------------------------------------------------------
+const isDevelopment = () => process.env.NODE_ENV === 'development';
+const getSecureCookieSetting = () => !isDevelopment(); // 개발환경이 아닐 때만 secure:true 설정
 
 // ------------------------------------------------------------
 // [3] 소셜 로그인 후 추가 정보 입력
@@ -117,12 +129,12 @@ export async function addInfo(req, res) {
     //    (B) refreshToken -> 쿠키
     res.cookie("refreshToken", tokens.refreshToken, {
       httpOnly: true,
-      secure: true, // HTTPS 사용 시 true로 설정
+      secure: getSecureCookieSetting(),
       sameSite: "none",
     });
 
     // 환경에 따라 다른 리다이렉트 URL 사용
-    const baseUrl = process.env.NODE_ENV === 'development' 
+    const baseUrl = isDevelopment() 
       ? 'https://localhost:3000' 
       : 'https://lakabe.com';
       
@@ -271,13 +283,13 @@ export async function linkAccounts(req, res) {
     user.provider_id = providerId;
     await user.save();
     // Ensure tokens are awaited properly
-    const tokens = await issueTokens(user.id); // Ensure tokens are awaited properly
+    const tokens = await issueTokens(user.id);
 
     // set-cookie refresh
     res.cookie("refreshToken", tokens.refreshToken, {
       httpOnly: true,
       sameSite: "none",
-      secure: process.env.NODE_ENV === 'development', // 개발환경에서만 secure:true 필요
+      secure: getSecureCookieSetting(),
     });
     // json 응답으로 accessToken
     return res.json({ message: "연동+로그인 완료", accessToken: tokens.accessToken });

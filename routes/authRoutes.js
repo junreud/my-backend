@@ -8,6 +8,8 @@ import { createLogger } from '../lib/logger.js';
 import 'dotenv/config';
 
 const logger = createLogger('AuthRoutes');
+const isDevelopment = () => process.env.NODE_ENV === 'development';
+const getSecureCookieSetting = () => !isDevelopment();
 
 // 환경에 따른 프론트엔드 URL 설정
 const getFrontendUrl = () => {
@@ -161,7 +163,7 @@ router.get("/kakao/callback", (req, res, next) => {
         const tokens = await issueTokens(user.id);
         res.cookie("refreshToken", tokens.refreshToken, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === 'development',
+          secure: getSecureCookieSetting(),
           sameSite: "none",
         });
         const frontendUrl = getFrontendUrl();
