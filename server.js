@@ -14,79 +14,80 @@ import keywordRoutes from "./routes/keywordRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import placeRoutes from "./routes/placeRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import kakaoRoutes from "./routes/kakaoRoutes.js";
 
-const app = express();
-let server;
+  const app = express();
+  let server;
 
-if (process.env.NODE_ENV === 'development') {
-  const key = fs.readFileSync("./localhost+2-key.pem");
-  const cert = fs.readFileSync("./localhost+2.pem");
-  server = https.createServer({ key, cert }, app);
-} else {
-  server = app;
-}
+  if (process.env.NODE_ENV === 'development') {
+    const key = fs.readFileSync("./localhost+2-key.pem");
+    const cert = fs.readFileSync("./localhost+2.pem");
+    server = https.createServer({ key, cert }, app);
+  } else {
+    server = app;
+  }
 
-// 허용된 도메인 정의
-const allowedOrigins = [
-  'http://localhost:3000',
-  'https://localhost:3000',
-  process.env.FRONTEND_URL,
-  'https://lakabe.com',
-  'https://www.lakabe.com',
-];
+  // 허용된 도메인 정의
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'https://localhost:3000',
+    process.env.FRONTEND_URL,
+    'https://lakabe.com',
+    'https://www.lakabe.com',
+  ];
 
-// Socket.IO 초기화
-const io = new Server(server, {
-  cors: {
+  // Socket.IO 초기화
+  const io = new Server(server, {
+    cors: {
+      origin: allowedOrigins,
+      credentials: true,
+    }
+  });
+
+  // io를 전역으로 사용할 수 있도록 설정
+  app.set('socketio', io);
+
+  io.on('connection', (socket) => {
+    console.log(`[Socket.IO] 클라이언트 연결: ${socket.id}`);
+
+    socket.on('disconnect', () => {
+      console.log(`[Socket.IO] 클라이언트 연결 종료: ${socket.id}`);
+    });
+  });
+
+  app.disable("etag");
+  app.use(morgan("dev"));
+  app.use(cors({
     origin: allowedOrigins,
     credentials: true,
+  }));
+  app.use(cookieParser());
+  app.use(express.json());
+  app.use(passport.initialize());
+
+  app.use("/auth", authRoutes);
+  app.use("/keyword", keywordRoutes);
+  app.use("/api", userRoutes);
+  app.use("/api/place", placeRoutes);
+  app.use("/api/admin", adminRoutes);
+  app.use("/api/customer", albamonRoutes);
+  app.use("/api/kakao", kakaoRoutes);
+  // Redis 및 DB 연결
+  await connectRedis();
+  await sequelize.sync();
+  console.log("DB sync OK");
+
+  const PORT = process.env.PORT || 4000;
+
+  if (process.env.NODE_ENV === 'development') {
+    server.listen(PORT, () => {
+      console.log(`Development server running on https://localhost:${PORT}`);
+    });
+  } else {
+    app.listen(PORT, () => {
+      console.log(`Production server running on port ${PORT}`);
+      console.log(`Available via Cloudflare Tunnel at https://api.lakabe.com`);
+    });
   }
-});
 
-// io를 전역으로 사용할 수 있도록 설정
-app.set('socketio', io);
-
-io.on('connection', (socket) => {
-  console.log(`[Socket.IO] 클라이언트 연결: ${socket.id}`);
-
-  socket.on('disconnect', () => {
-    console.log(`[Socket.IO] 클라이언트 연결 종료: ${socket.id}`);
-  });
-});
-
-app.disable("etag");
-app.use(morgan("dev"));
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true,
-}));
-app.use(cookieParser());
-app.use(express.json());
-app.use(passport.initialize());
-
-app.use("/auth", authRoutes);
-app.use("/keyword", keywordRoutes);
-app.use("/api", userRoutes);
-app.use("/api/place", placeRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api/customer", albamonRoutes);
-
-// Redis 및 DB 연결
-await connectRedis();
-await sequelize.sync();
-console.log("DB sync OK");
-
-const PORT = process.env.PORT || 4000;
-
-if (process.env.NODE_ENV === 'development') {
-  server.listen(PORT, () => {
-    console.log(`Development server running on https://localhost:${PORT}`);
-  });
-} else {
-  app.listen(PORT, () => {
-    console.log(`Production server running on port ${PORT}`);
-    console.log(`Available via Cloudflare Tunnel at https://api.lakabe.com`);
-  });
-}
-
-export { io };
+  export { io };

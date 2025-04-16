@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pyautogui
+pydantic
+opencv-python
+pyobjc
+pytesseract

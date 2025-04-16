@@ -63,3 +63,4 @@ brew install redis
 brew services start redis
 
 echo "설정이 완료되었습니다. 'node index.js' 명령어로 서버를 시작할 수 있습니다."
+brew install tesseract

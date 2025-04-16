@@ -1,0 +1,12 @@
+tap "homebrew/services"
+brew "git"
+brew "mkcert"
+brew "node"
+brew "numpy"
+brew "pkgconf"
+brew "pnpm"
+brew "pyqt"
+brew "python@3.12"
+brew "redis", restart_service: :changed
+brew "tesseract"
+brew "tree"
