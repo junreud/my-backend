@@ -18,14 +18,15 @@ ICON_ADD = str(BASE_DIR / "images/add_icon.png")
 BTN_ADD = str(BASE_DIR / "images/add_btn.png")
 DEBUG_DIR = BASE_DIR / "debugs-screens"
 
+
 def focus_kakaotalk():
     script = 'tell application "KakaoTalk" to activate'
     subprocess.run(['osascript', '-e', script])
+    time.sleep(0.5)  # 창 활성화를 위한 대기 시간 추가
 
 
 # 디버그 폴더 생성 및 초기화 함수
 def clear_debug_dir():
-    print(f"[INFO] 디버그 폴더 초기화: {DEBUG_DIR}")
     if os.path.exists(DEBUG_DIR):
         shutil.rmtree(DEBUG_DIR)
     os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -440,6 +441,7 @@ def wait_and_click(image_path, confidence=0.5, timeout=10):
         print(f"[ERROR] wait_and_click 실패: {str(e)}")
         raise
 
+
 def navigate_to_friends_tab():
     """
     카카오톡 친구 탭으로 이동하는 함수
@@ -468,7 +470,7 @@ def add_friend(username, phone):
 
     # 카카오톡 창 영역 가져오기
     focus_kakaotalk()
-    
+
     # 친구 탭으로 이동
     navigate_to_friends_tab()
     time.sleep(0.2)
@@ -494,11 +496,11 @@ def add_friend(username, phone):
         # 전화번호 입력
         print(f"[DEBUG] 전화번호 입력: {phone}")
         pyperclip.copy(phone)
+        pyautogui.keyDown('command')
         time.sleep(0.2)
-        pyautogui.hotkey('command', 'a')
+        pyautogui.press('v')
         time.sleep(0.2)
-        pyautogui.hotkey('command', 'v')
-        time.sleep(0.2)
+        pyautogui.keyUp('command')
 
         # 버튼 클릭 시도: 노란색 버튼 탐지
         print("[DEBUG] 노란색 버튼 탐지 및 클릭 시도")
@@ -509,20 +511,30 @@ def add_friend(username, phone):
             x, y = button_pos
             pyautogui.moveTo(x, y, duration=0)
             pyautogui.click()
-            time.sleep(1.5)  # 결과 메시지 뜰 때까지 대기
+            time.sleep(1.5)
 
-            # 결과 메시지 OCR 판독
-            msg_region = (region[0] + 20, region[1] + region[3] - 120, 300, 80)
-            result_capture = pyautogui.screenshot(region=msg_region)
-            result_text = pytesseract.image_to_string(result_capture, lang="kor+eng")
+            # 메시지 박스가 뜨는 영역만 캡처 (예: 창 하단 120픽셀)
+            msg_region = (
+                region[0] + 10,
+                region[1] + region[3] - 300,   # 더 위에서부터 시작 (기존 -200 → -300)
+                region[2] - 20,
+                220                            # 높이도 더 크게 (기존 120 → 220)
+            )
+            result_img = pyautogui.screenshot(region=msg_region)
+            result_img.save("debugs-screens/ocr_msg_area.png")  # 디버깅용
+
+            result_text = pytesseract.image_to_string(result_img, lang="kor+eng")
             print(f"[DEBUG] OCR 결과: {result_text}")
 
             if "친구 등록에 성공했습니다" in result_text:
                 print(f"[✅ 완료] 친구 추가 성공: {username} / {phone}")
                 return {"username": username, "phone": phone, "status": "success"}
-            elif ("이미 등록된 친구입니다" in result_text) or ("입력하신 번호를 친구로 추가할 수 없습니다" in result_text):
-                print(f"[❌ 실패] 친구 추가 실패(이미 등록/불가): {username} / {phone}")
-                return {"username": username, "phone": phone, "status": "fail", "reason": "이미 등록/불가"}
+            elif "이미 등록된 친구입니다" in result_text:
+                print(f"[❌ 실패] 친구 추가 실패(이미 등록): {username} / {phone}")
+                return {"username": username, "phone": phone, "status": "already_registered"}
+            elif "입력하신 번호를 친구로 추가할 수 없습니다" in result_text:
+                print(f"[❌ 실패] 친구 추가 실패(추가 불가): {username} / {phone}")
+                return {"username": username, "phone": phone, "status": "not_allowed"}
             else:
                 print(f"[❌ 실패] 친구 추가 실패(알 수 없음): {username} / {phone}")
                 return {"username": username, "phone": phone, "status": "fail", "reason": "알 수 없음"}
@@ -565,4 +577,454 @@ def add_friends_via_kakao(friends_data):
                 "reason": str(e)
             })
 
+    return results
+
+def capture_kakao_window(output_path):
+    """
+    카카오톡 창을 클릭 없이 자동으로 캡처하는 함수
+    """
+    try:
+        # 출력 디렉토리 확인 및 생성
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # 카카오톡 앱 강제 활성화
+        focus_kakaotalk()
+        time.sleep(0.5)
+        
+        # 전체 프로세스와 캡처를 하나의 AppleScript로 처리
+        applescript = f'''
+        osascript -e '
+        tell application "KakaoTalk" to activate
+        delay 0.5
+        
+        tell application "System Events"
+            tell process "KakaoTalk"
+                set frontmost to true
+                # 첫 번째 창 캡처 (가장 최근에 열린 창)
+                set win to a reference to (first window whose role is "AXWindow" and subrole is "AXStandardWindow")
+                set winPos to position of win
+                set winSize to size of win
+                
+                # 창 위치와 크기 반환
+                set result to {{item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}}
+                return result
+            end tell
+        end tell
+        '
+        '''
+        
+        result = subprocess.run(applescript, shell=True, text=True, capture_output=True)
+        window_info = result.stdout.strip()
+        
+        # 창 정보 파싱
+        if window_info:
+            try:
+                coords = [int(x) for x in window_info.replace("{", "").replace("}", "").split(",")]
+                if len(coords) == 4:
+                    x, y, width, height = coords
+                    # screencapture 명령으로 특정 영역 캡처
+                    subprocess.run(['screencapture', '-R', f"{x},{y},{width},{height}", '-x', output_path], check=True)
+                    print(f"[INFO] 카카오톡 창 자동 캡처 완료: {output_path}")
+                    return True
+            except Exception as parse_error:
+                print(f"[WARN] 창 정보 파싱 실패: {parse_error}")
+        
+        # 대체 방법: 현재 활성 창 캡처
+        print("[WARN] 창 좌표를 가져오지 못함, 활성 창 캡처 시도...")
+        subprocess.run(['screencapture', '-W', '-x', output_path], check=True)
+        print(f"[INFO] 활성 창 캡처 완료: {output_path}")
+        
+        # 파일이 실제로 생성되었는지 확인
+        if os.path.exists(output_path):
+            print(f"[INFO] 파일 저장 확인: {output_path} ({os.path.getsize(output_path)} bytes)")
+            return True
+        else:
+            print(f"[ERROR] 파일이 생성되지 않음: {output_path}")
+            return False
+            
+    except Exception as e:
+        print(f"[ERROR] 창 캡처 실패: {e}")
+        return False
+        
+def check_message_status(username, timestamp):
+    """
+    메시지 전송 후 상태를 확인하는 함수
+    포커스된 채팅창을 캡처하고 OCR로 분석
+    """
+    # 활성 창(채팅창) 캡처
+    first_msg_path = f"debugs-screens/first_msg_{username}_{timestamp}.png"
+    if not capture_kakao_window(first_msg_path):
+        return False, "채팅창 캡처 실패"
+    
+    print(f"[DEBUG] 첫 메시지 전송 후 캡처: {first_msg_path}")
+    
+    # 캡처된 이미지 불러오기
+    try:
+        img = cv2.imread(first_msg_path)
+        if img is None:
+            raise Exception("이미지 로딩 실패")
+        
+        # 이미지의 하단 부분만 크롭 (하단 20%)
+        height, width = img.shape[:2]
+        bottom_height = int(height * 0.2)
+        bottom_img = img[height - bottom_height:height, :]
+        
+        # 하단 부분 이미지 저장
+        bottom_capture_path = f"debugs-screens/bottom_area_{username}_{timestamp}.png"
+        cv2.imwrite(bottom_capture_path, bottom_img)
+        
+        # OCR로 텍스트 추출
+        ocr_text = pytesseract.image_to_string(bottom_img, lang="kor+eng")
+        print(f"[DEBUG] 첫 메시지 후 OCR 결과: {ocr_text}")
+        
+        # 오류 메시지 체크
+        error_patterns = [
+            "전송 실패", "메시지를 보낼 수 없습니다",
+            "차단", "수신 거부", "오류가 발생",
+            "메시지 전송에 실패"
+        ]
+        
+        for pattern in error_patterns:
+            if pattern in ocr_text:
+                error_msg = f"메시지 전송 오류: {pattern}"
+                print(f"[ERROR] {error_msg}")
+                return False, error_msg
+        
+        # 성공 패턴 체크
+        success_patterns = ["읽음", "1", "전송됨"]
+        for pattern in success_patterns:
+            if pattern in ocr_text:
+                print(f"[INFO] 메시지 전송 성공 확인: {pattern} 감지됨")
+                return True, ""
+        
+        return True, ""  # 오류 패턴이 없으면 일단 성공으로 간주
+        
+    except Exception as e:
+        print(f"[ERROR] 메시지 상태 확인 중 오류: {e}")
+        return False, str(e)
+
+
+def send_messages_via_kakao(message_groups):
+    """
+    카카오톡에서 친구를 찾아 여러 메시지를 순차적으로 발송하는 함수
+    첫 메시지 전송 후 상태 확인하고 성공 시에만 나머지 메시지 전송
+    """
+    clear_debug_dir()
+    results = []
+    region = get_kakaotalk_window_region()
+    focus_kakaotalk()
+    time.sleep(1)
+    
+    for group in message_groups:
+        username = group["username"]
+        messages = group["messages"]
+        success = True
+        error_msg = ""
+        first_message_sent = False
+        
+        try:
+            # 1. 친구탭 이동
+            pyautogui.keyDown('command')
+            time.sleep(0.2)
+            pyautogui.press('1')
+            time.sleep(0.2)
+            pyautogui.keyUp('command')
+            
+            # 2. 검색창 활성화
+            pyautogui.keyDown('command')
+            time.sleep(0.2)
+            pyautogui.press('f')
+            time.sleep(0.2)
+            pyautogui.keyUp('command')
+            
+            # 3. 친구명 복사 및 붙여넣기
+            pyperclip.copy(username)
+            pyautogui.keyDown('command')
+            time.sleep(0.2)
+            pyautogui.press('v')
+            time.sleep(0.2)
+            pyautogui.keyUp('command')
+            
+            pyautogui.press('down', presses=2, interval=0.1)
+            time.sleep(0.2)
+            pyautogui.press('enter')
+            time.sleep(0.3)  # 친구 선택 후 대화창 열릴 시간 대기
+            
+            timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+            
+            # 메시지가 없으면 건너뛰기
+            if not messages:
+                print(f"[WARN] {username}에게 보낼 메시지가 없습니다.")
+                results.append({
+                    "username": username,
+                    "status": "skip",
+                    "reason": "메시지 없음"
+                })
+                continue
+            
+            # 첫 메시지 전송
+            first_msg = messages[0]
+            msg_type = first_msg["type"]
+            content = first_msg["content"]
+            
+            if msg_type == "text":
+                # 텍스트 메시지 입력 및 전송
+                print(f"[INFO] 첫 텍스트 메시지 전송: {content[:20]}...")
+                pyperclip.copy(content)
+                pyautogui.keyDown('command')
+                time.sleep(0.4)
+                pyautogui.press('v')
+                time.sleep(0.4)
+                pyautogui.keyUp('command')
+                time.sleep(0.4)
+                pyautogui.press('enter')
+                
+            elif msg_type == "image":
+                # 이미지 메시지 전송
+                print(f"[INFO] 첫 이미지 메시지 전송: {content}")
+                if not os.path.exists(content):
+                    print(f"[ERROR] 이미지 파일이 존재하지 않음: {content}")
+                    raise FileNotFoundError(f"이미지 파일이 존재하지 않음: {content}")
+                
+                # 이미지 전송 로직
+                abs_path = os.path.abspath(content)
+                directory = os.path.dirname(abs_path)
+                filename = os.path.basename(abs_path)
+                
+                # AppleScript로 파일 복사 및 붙여넣기
+                applescript = f'''
+                tell application "Finder"
+                    set filePath to POSIX file "{abs_path}"
+                    select filePath
+                    activate
+                    delay 1
+                end tell
+
+                # 실제 클릭 이벤트 추가
+                tell application "System Events"
+                    # 마우스 클릭으로 포커스 강제 설정
+                    tell process "Finder"
+                        # 중괄호 문법 수정
+                        set windowBounds to bounds of front window
+                        click at {{(item 1 of windowBounds + item 3 of windowBounds) / 2, (item 2 of windowBounds + item 4 of windowBounds) / 2}}
+                        delay 0.5
+                    end tell
+                    
+                    # 편집 메뉴에서 복사 선택
+                    click menu item "복사" of menu "편집" of menu bar item "편집" of menu bar 1 of application process "Finder"
+                    delay 1.5
+                end tell
+
+                # 카카오톡으로 전환 (확실히 활성화되도록 개선)
+                tell application "KakaoTalk" to activate
+                delay 1.5  # 전환 대기 시간 증가
+
+                # 카카오톡 창 활성화 확인 및 붙여넣기
+                tell application "System Events"
+                    # 카카오톡 프로세스가 최상위에 있는지 확인
+                    tell process "KakaoTalk"
+                        set frontmost to true
+                        delay 0.5
+                    end tell
+                    
+                    # 붙여넣기 확실히 하기
+                    keystroke "v" using {{command down}}  # 중괄호 이스케이프 처리
+                    delay 1.5
+
+                    # 한 번 더 시도 (보험)
+                    keystroke "v" using {{command down}}  # 중괄호 이스케이프 처리
+                    delay 1
+                    
+                    # 전송
+                    keystroke return
+                    delay 1
+                end tell
+                '
+                '''
+                print("[DEBUG] 파인더에서 파일 복사 및 붙여넣기 실행")
+                subprocess.run(applescript, shell=True, check=True)
+                
+            first_message_sent = True
+            time.sleep(1.5)  # 메시지 전송 후 알림이 표시될 시간 충분히 대기
+            
+            # 메시지 전송 후 상태 확인을 위해 캡처
+            print("[INFO] 첫 메시지 전송 완료, 상태 체크 중...")
+            success, check_error = check_message_status(username, timestamp)
+            
+            if not success:
+                error_msg = check_error
+                print(f"[ERROR] 첫 메시지 전송 실패: {error_msg}")
+                results.append({
+                    "username": username,
+                    "status": "fail",
+                    "reason": error_msg
+                })
+                # 채팅방 나가기
+                pyautogui.press('esc')
+                time.sleep(0.5)
+                continue  # 다음 친구로 넘어감
+            
+            # 첫 메시지 전송 성공! 나머지 메시지 전송
+            print("[INFO] 첫 메시지 전송 성공, 나머지 메시지 전송 시작")
+            
+            # 1번째 이후의 메시지 전송
+            for idx, msg in enumerate(messages[1:], 1):
+                msg_type = msg["type"]
+                content = msg["content"]
+                
+                if msg_type == "text":
+                    # 텍스트 메시지 입력 및 전송
+                    print(f"[INFO] 텍스트 메시지 #{idx+1} 전송: {content[:20]}...")
+                    pyperclip.copy(content)
+                    pyautogui.keyDown('command')
+                    time.sleep(0.2)
+                    pyautogui.press('v')
+                    time.sleep(0.2)
+                    pyautogui.keyUp('command')
+                    time.sleep(0.2)
+                    pyautogui.press('enter')
+                    time.sleep(0.5)
+                    
+                elif msg_type == "image":
+                    # 이미지 전송: 파인더에서 이미지 선택 후 카카오톡에 붙여넣기
+                    print(f"[INFO] 이미지 메시지 #{idx+1} 전송: {content}")
+                    
+                    # 파일 존재 확인
+                    if not os.path.exists(content):
+                        print(f"[ERROR] 이미지 파일이 존재하지 않음: {content}")
+                        continue  # 이 이미지는 건너뛰고 다음 메시지로
+                    
+                    # 절대 경로 변환
+                    abs_path = os.path.abspath(content)
+                    directory = os.path.dirname(abs_path)
+                    filename = os.path.basename(abs_path)  # 모든 경로에서 filename 변수 초기화
+
+                    # 이미지 전송 시도
+                    try:
+                        # 메뉴 항목 대신 키보드 단축키 사용
+                        applescript = f'''
+                        tell application "Finder"
+                            set filePath to POSIX file "{abs_path}"
+                            select filePath
+                            activate
+                            delay 1
+                        end tell
+
+                        # 실제 클릭 이벤트 추가
+                        tell application "System Events"
+                            # 마우스 클릭으로 포커스 강제 설정
+                            tell process "Finder"
+                                # 중괄호 문법 수정
+                                set windowBounds to bounds of front window
+                                click at {{(item 1 of windowBounds + item 3 of windowBounds) / 2, (item 2 of windowBounds + item 4 of windowBounds) / 2}}
+                                delay 0.5
+                            end tell
+                            
+                            # 편집 메뉴에서 복사 선택
+                            click menu item "복사" of menu "편집" of menu bar item "편집" of menu bar 1 of application process "Finder"
+                            delay 1.5
+                        end tell
+
+                        # 카카오톡으로 전환 (확실히 활성화되도록 개선)
+                        tell application "KakaoTalk" to activate
+                        delay 1.5  # 전환 대기 시간 증가
+
+                        # 카카오톡 창 활성화 확인 및 붙여넣기
+                        tell application "System Events"
+                            # 카카오톡 프로세스가 최상위에 있는지 확인
+                            tell process "KakaoTalk"
+                                set frontmost to true
+                                delay 0.5
+                            end tell
+                            
+                            # 붙여넣기 확실히 하기
+                            keystroke "v" using {{command down}}  # 중괄호 이스케이프 처리
+                            delay 1.5
+
+                            # 한 번 더 시도 (보험)
+                            keystroke "v" using {{command down}}  # 중괄호 이스케이프 처리
+                            delay 1
+                            
+                            # 전송
+                            keystroke return
+                            delay 1
+                        end tell
+                        '
+                        '''
+                        
+                        print("[DEBUG] 파인더에서 파일 복사 실행")
+                        subprocess.run(applescript, shell=True, check=True)
+                        time.sleep(1.5)
+                        
+                    except Exception as img_error:
+                        print(f"[ERROR] 이미지 전송 실패: {img_error}")
+                        
+                        # 대체 방법: 직접 이미지 복사
+                        try:
+                            # filename 변수가 이미 위에서 정의됨
+                            print(f"[DEBUG] 대체 방법으로 이미지 전송 시도: {filename}")
+                            
+                            # pbcopy 명령어로 파일 자체를 클립보드에 복사
+                            subprocess.run(
+                                f"osascript -e 'set the clipboard to (read (POSIX file \"{abs_path}\") as TIFF picture)'", 
+                                shell=True, check=True
+                            )
+                            time.sleep(0.5)
+                            
+                            # 카카오톡으로 전환
+                            focus_kakaotalk()
+                            time.sleep(0.8)
+                            
+                            # 붙여넣기
+                            pyautogui.keyDown('command')
+                            time.sleep(0.2)
+                            pyautogui.press('v')
+                            time.sleep(0.2)
+                            pyautogui.keyUp('command')
+                            time.sleep(1)
+                            
+                            # 전송
+                            pyautogui.press('enter')
+                            time.sleep(1)
+                            
+                            print(f"[INFO] 대체 방법으로 이미지 전송 완료: {filename}")
+                            
+                        except Exception as alt_error:
+                            print(f"[ERROR] 모든 이미지 전송 방법 실패: {alt_error}")
+                            # 최후의 방법: 파일 경로만 전송
+                            pyperclip.copy(f"이미지 전송 실패: {abs_path}")
+                            pyautogui.keyDown('command')
+                            time.sleep(0.2)
+                            pyautogui.press('v') 
+                            time.sleep(0.2)
+                            pyautogui.keyUp('command')
+                            time.sleep(0.5)
+                            pyautogui.press('enter')
+        
+            # 모든 메시지 전송 완료
+            print(f"[SUCCESS] {username}에게 모든 메시지 전송 완료")
+            results.append({
+                "username": username,
+                "status": "success"
+            })
+            
+            # 채팅방 나가기
+            pyautogui.press('esc')
+            time.sleep(0.5)
+                
+        except Exception as e:
+            print(f"[ERROR] {username}에게 메시지 전송 중 오류: {e}")
+            results.append({
+                "username": username,
+                "status": "fail",
+                "reason": str(e)
+            })
+            # 예외 발생 시에도 채팅방 나가기 시도
+            try:
+                pyautogui.press('esc')
+                time.sleep(0.5)
+            except Exception as e:  # 구체적인 예외 타입 지정
+                print(f"[WARN] 채팅방 나가기 실패: {e}")
+                pass
+                
     return results

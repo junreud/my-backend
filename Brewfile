@@ -10,3 +10,4 @@ brew "python@3.12"
 brew "redis", restart_service: :changed
 brew "tesseract"
 brew "tree"
+brew "tesseract-lang"
