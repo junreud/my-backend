@@ -24,6 +24,12 @@ const Keyword = sequelize.define('Keyword', {
     type: DataTypes.BOOLEAN,
     allowNull: true,
   },
+  has_no_results: {
+    type: DataTypes.BOOLEAN,
+    allowNull: true,
+    defaultValue: false,
+    comment: '"조건에 맞는 업체가 없습니다" 메시지가 표시되었는지 여부'
+  },
   created_at: {
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW,

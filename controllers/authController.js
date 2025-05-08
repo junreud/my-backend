@@ -299,6 +299,33 @@ export async function linkAccounts(req, res) {
     return res.status(500).json({ message: "서버 오류" });
   }
 }
+
+// ------------------------------------------------------------
+// [X] Logout: clear refresh token and cookie
+// ------------------------------------------------------------
+export async function logout(req, res) {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    if (refreshToken) {
+      const user = await User.findByRefreshToken(refreshToken);
+      if (user) {
+        user.refresh_token = null;
+        await user.save();
+      }
+    }
+    // clear cookie
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: getSecureCookieSetting(),
+      sameSite: 'none',
+    });
+    return res.json({ message: '로그아웃 성공' });
+  } catch (err) {
+    console.error('[ERROR] logout:', err);
+    return res.status(500).json({ message: '서버 오류' });
+  }
+}
+
 // ------------------------------------------------------------
 // Export default
 // ------------------------------------------------------------
@@ -311,4 +338,5 @@ export default {
   verify,
   checkEmailAndPassword,
   linkAccounts,
+  logout
 };

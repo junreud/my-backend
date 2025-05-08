@@ -15,17 +15,19 @@ import userRoutes from "./routes/userRoutes.js";
 import placeRoutes from "./routes/placeRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import kakaoRoutes from "./routes/kakaoRoutes.js";
+import templateRoutes from './routes/templateRoutes.js';
+import { getDailySummary } from './controllers/statsController.js';
+
+// Load queue worker to register processing handlers and schedules
+import "./services/crawler/keywordQueue.js";
 
   const app = express();
   let server;
 
-  if (process.env.NODE_ENV === 'development') {
-    const key = fs.readFileSync("./localhost+2-key.pem");
-    const cert = fs.readFileSync("./localhost+2.pem");
-    server = https.createServer({ key, cert }, app);
-  } else {
-    server = app;
-  }
+  // Always serve HTTPS with self-signed certificate in development and production
+  const key = fs.readFileSync("./localhost+2-key.pem");
+  const cert = fs.readFileSync("./localhost+2.pem");
+  server = https.createServer({ key, cert }, app);
 
   // 허용된 도메인 정의
   const allowedOrigins = [
@@ -65,17 +67,31 @@ import kakaoRoutes from "./routes/kakaoRoutes.js";
   app.use(express.json());
   app.use(passport.initialize());
 
+  // 정적 파일 제공 설정 추가
+  
   app.use("/auth", authRoutes);
   app.use("/keyword", keywordRoutes);
+
+  // 템플릿 디렉토리 브라우징 및 API (특정경로 먼저 매칭)
+  app.use('/api/templates', templateRoutes);
+  // 사용자 관련 API
   app.use("/api", userRoutes);
   app.use("/api/place", placeRoutes);
   app.use("/api/admin", adminRoutes);
   app.use("/api/customer", albamonRoutes);
   app.use("/api/kakao", kakaoRoutes);
-  // Redis 및 DB 연결
-  await connectRedis();
-  await sequelize.sync();
-  console.log("DB sync OK");
+
+  // 통계 API: 오늘의 사용자 및 신규 클라이언트 집계
+  app.get(
+    "/stats/daily-summary",
+    passport.authenticate('jwt', { session: false }),
+    getDailySummary
+  );
+
+// Redis 및 DB 연결
+await connectRedis();
+await sequelize.sync();
+console.log("DB sync OK");
 
   const PORT = process.env.PORT || 4000;
 

@@ -3,8 +3,8 @@
 import pyautogui
 import time
 import os
-import Quartz
-# from PIL import ImageDraw # 제거됨 (OpenCV로 처리 가능하거나 제거됨)
+from AppKit import NSWorkspace
+import ApplicationServices as AS
 import datetime
 import pathlib
 import cv2
@@ -14,6 +14,14 @@ import pyperclip
 import pytesseract
 import subprocess
 import logging
+from pynput.keyboard import Controller, Key
+import tempfile
+from PIL import Image
+import datetime
+import subprocess
+import os
+
+keyboard = Controller()
 
 # --- 상수 정의 ---
 BASE_DIR = pathlib.Path(__file__).parent.absolute()
@@ -25,7 +33,7 @@ ICON_ADD = str(IMAGE_DIR / "add_icon.png") # 친구 추가 아이콘 이미지
 # BTN_ADD = str(IMAGE_DIR / "add_btn.png") # find_button 리팩토링 후 사용되지 않는 것으로 보임
 
 # 시간 상수 (초 단위)
-SHORT_SLEEP = 0.3 # 짧은 대기 시간
+SHORT_SLEEP = 0.2 # 짧은 대기 시간
 MEDIUM_SLEEP = 0.6 # 중간 대기 시간
 LONG_SLEEP = 1.2 # 긴 대기 시간
 EXTRA_LONG_SLEEP = 2.0 # 매우 긴 대기 시간
@@ -106,41 +114,86 @@ def clear_debug_dir():
 # Quartz를 사용하여 KakaoTalk 메인 창의 영역을 가져옵니다.
 def get_kakaotalk_window_region():
     """
-    Quartz를 사용하여 KakaoTalk 메인 창 영역을 가져옵니다.
-    (x, y, 너비, 높이) 튜플 또는 실패 시 None을 반환합니다.
+    Accessibility API를 사용해 KakaoTalk 프로세스의 포커스된 창 위치와 크기를 반환합니다.
+    실패 시 전체 화면을 반환합니다.
     """
     try:
-        # 화면에 보이는 창 목록만 가져오기 (데스크탑 요소 제외)
-        window_list = Quartz.CGWindowListCopyWindowInfo(
-            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
-            Quartz.kCGNullWindowID
-        )
-        target_owner = "KakaoTalk" # 찾으려는 앱 소유자 이름
-
-        for window in window_list:
-            owner_name = window.get("kCGWindowOwnerName", "")
-            window_name = window.get("kCGWindowName", "") # 비어 있거나 채팅방 이름일 수 있음
-            bounds = window.get("kCGWindowBounds", {})
-            layer = window.get("kCGWindowLayer", -1) # 창 레이어 (메인 창은 보통 0)
-
-            # 메인 KakaoTalk 창 찾기 (보통 layer 0)
-            if owner_name == target_owner and layer == 0:
-                x = int(bounds.get("X", 0))
-                y = int(bounds.get("Y", 0))
-                w = int(bounds.get("Width", 0))
-                h = int(bounds.get("Height", 0))
-
-                # 작은 팝업/요소를 제외하기 위한 크기 제약 조건 추가
-                if w > 200 and h > 300:
-                    log.debug(f"KakaoTalk 창 발견: 이름='{window_name}', 영역=({x}, {y}, {w}, {h})")
-                    return (x, y, w, h)
-
-        log.warning("적절한 KakaoTalk 창을 Quartz를 통해 찾지 못했습니다.")
-        return None # 실패 표시
-
+        # KakaoTalk 프로세스 찾기: 번들ID 또는 로컬라이즈드 이름 매칭
+        workspace = NSWorkspace.sharedWorkspace()
+        kakao_pid = None
+        for app in workspace.runningApplications():
+            name = app.localizedName()
+            bundle_id = app.bundleIdentifier() or ""
+            if bundle_id == "com.kakao.KakaoTalk" or name in ("KakaoTalk", "카카오톡"):
+                kakao_pid = app.processIdentifier()
+                break
+        if kakao_pid is None:
+            raise Exception("KakaoTalk 프로세스를 찾을 수 없습니다.")
+        # Accessibility API로 앱 참조 생성
+        app_ref = AS.AXUIElementCreateApplication(kakao_pid)
+        # 포커스된 창의 AXValueRef 획득
+        _, front_win = AS.AXUIElementCopyAttributeValue(app_ref, AS.kAXFocusedWindowAttribute, None)
+        _, pos_ref = AS.AXUIElementCopyAttributeValue(front_win, AS.kAXPositionAttribute, None)
+        _, size_ref = AS.AXUIElementCopyAttributeValue(front_win, AS.kAXSizeAttribute, None)
+        # use AXValueGetValue with valuePtr=None
+        success, point = AS.AXValueGetValue(pos_ref, AS.kAXValueCGPointType, None)
+        success2, size = AS.AXValueGetValue(size_ref, AS.kAXValueCGSizeType, None)
+        x, y = int(point.x), int(point.y)
+        w, h = int(size.width), int(size.height)
+        log.info(f"Accessibility API로 KakaoTalk 창 영역: ({x}, {y}, {w}, {h})")
+        return (x, y, w, h)
     except Exception as e:
-        log.error(f"KakaoTalk 창 영역 가져오기 오류: {e}", exc_info=True)
-        return None
+        log.error(f"Accessibility API로 KakaoTalk 창 위치 가져오기 실패: {e}", exc_info=True)
+        sw, sh = pyautogui.size()
+        return (0, 0, sw, sh)
+
+def get_kakaotalk_popup_or_main_window_region():
+    """
+    KakaoTalk의 모든 창 중에서 (1) 팝업(모달) 창이 있으면 그 창의 좌표를,
+    (2) 없으면 메인창 좌표를 반환. 둘 다 없으면 전체 화면 반환.
+    """
+    # Accessibility API로 KakaoTalk의 모든 윈도우 조회
+    try:
+        workspace = NSWorkspace.sharedWorkspace()
+        kakao_pid = None
+        for app in workspace.runningApplications():
+            if app.localizedName() in ("KakaoTalk", "카카오톡"):
+                kakao_pid = app.processIdentifier()
+                break
+        if kakao_pid is None:
+            raise Exception("KakaoTalk 프로세스를 찾을 수 없습니다.")
+        app_ref = AS.AXUIElementCreateApplication(kakao_pid)
+        _, windows = AS.AXUIElementCopyAttributeValue(app_ref, AS.kAXWindowsAttribute, None)
+        # 모달 팝업 윈도우 찾기 (제목에 '친구 추가' 포함)
+        for win in windows or []:
+            _, title = AS.AXUIElementCopyAttributeValue(win, AS.kAXTitleAttribute, None)
+            if isinstance(title, str) and ("친구 추가" in title or "친구등록" in title):
+                # 위치/크기 추출
+                _, pos = AS.AXUIElementCopyAttributeValue(win, AS.kAXPositionAttribute, None)
+                _, size = AS.AXUIElementCopyAttributeValue(win, AS.kAXSizeAttribute, None)
+                x, y = int(pos.x), int(pos.y)
+                w, h = int(size.width), int(size.height)
+                log.info(f"AXUI 팝업 윈도우 검출: ({x}, {y}, {w}, {h}) (title={title})")
+                return {"id": None, "bounds": (x, y, w, h)}
+    except Exception as e:
+        log.warning(f"AXUI 팝업 검출 실패: {e}")
+    # 팝업 못 찾으면 포커스된 창(메인/모달) 반환
+    bounds = get_kakaotalk_window_region()
+    return {"id": None, "bounds": bounds}
+
+def capture_region(region, save_path=None):
+    """
+    주어진(region) 좌표(x,y,w,h)로 screencapture를 사용해 스크린샷을 저장하고 PIL Image로 반환합니다.
+    멀티모니터 환경의 음수 좌표를 지원합니다.
+    """
+    x, y, w, h = region
+    region_str = f"{x},{y},{w},{h}"
+    if save_path:
+        output = str(save_path)
+    else:
+        output = os.path.join(tempfile.gettempdir(), f"region_capture_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.png")
+    subprocess.run(['screencapture', '-x', '-R', region_str, output], check=True)
+    return Image.open(output)
 
 # 화면과 템플릿 이미지를 매칭을 위해 준비합니다 (컬러 유지).
 # 템플릿이 화면 영역보다 크면 리사이즈합니다.
@@ -166,7 +219,7 @@ def preprocess_image(image_path, region):
         t_h, t_w = template.shape[:2]
         s_h, s_w = screen_np.shape[:2]
 
-        if t_h > s_h or t_w > s_w:
+        if (t_h > s_h or t_w > s_w):
             log.warning(f"템플릿 ({t_w}x{t_h})이 화면 영역 ({s_w}x{s_h})보다 큽니다. 리사이징합니다.")
             # 화면 영역에 맞게 축소 비율 계산 (약간의 여유 포함)
             height_ratio = s_h / t_h * 0.95
@@ -204,14 +257,13 @@ def find_add_friend_icon_direct(region):
         search_h = int(r_h * ADD_ICON_REGION_SCALE_HEIGHT)
         top_right_region = (search_x, search_y, search_w, search_h)
 
-        # 특정 영역 캡처
-        top_right_img = pyautogui.screenshot(region=top_right_region)
-        if top_right_img is None:
+        # 특정 영역 캡처 (screencapture 사용)
+        debug_top_right_path = DEBUG_DIR / f"top_right_{timestamp}.png"
+        top_right_img = capture_region(top_right_region, debug_top_right_path)
+        if (top_right_img is None):
             log.error("오른쪽 상단 영역 스크린샷 캡처 실패.")
             return None
 
-        debug_top_right_path = DEBUG_DIR / f"top_right_{timestamp}.png"
-        top_right_img.save(str(debug_top_right_path))
         log.debug(f"오른쪽 상단 영역 저장됨: {debug_top_right_path}")
 
         # 컨투어 감지를 위한 이미지 처리
@@ -285,15 +337,6 @@ def alt_add_friend_click(region):
 
         log.info(f"대체 클릭 시도 (상대 위치): ({click_x}, {click_y})")
 
-        # 선택 사항: 전체 스크린샷에 디버그 그리기 (느릴 수 있음)
-        # screen = pyautogui.screenshot()
-        # screen_cv = cv2.cvtColor(np.array(screen), cv2.COLOR_RGB2BGR)
-        # cv2.circle(screen_cv, (click_x, click_y), 15, (0, 0, 255), 2)
-        # timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-        # debug_path = DEBUG_DIR / f"alt_click_target_{timestamp}.png"
-        # cv2.imwrite(str(debug_path), screen_cv)
-        # log.debug(f"대체 클릭 대상 저장됨: {debug_path}")
-
         pyautogui.moveTo(click_x, click_y, duration=0.1)
         time.sleep(SHORT_SLEEP)
         pyautogui.click()
@@ -322,8 +365,10 @@ def find_button(region, button_type="yellow", search_area="bottom"):
             search_h = int(r_h * BUTTON_SEARCH_AREA_SCALE)
             search_region = (r_x, search_y, r_w, search_h)
 
-        # 검색 영역 캡처
-        screen = pyautogui.screenshot(region=search_region)
+        # 검색 영역 캡처 (screencapture 사용)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        mask_img = capture_region(search_region, DEBUG_DIR / f"btn_region_{button_type}_{timestamp}.png")
+        screen = mask_img
         if screen is None:
             log.error("버튼 검색을 위한 화면 영역 캡처 실패.")
             return None
@@ -363,7 +408,7 @@ def find_button(region, button_type="yellow", search_area="bottom"):
 
         if not found_buttons:
             log.debug(f"기준에 맞는 {button_type} 버튼을 찾지 못했습니다.")
-            # 디버깅을 위해 마스크 저장
+            # 디버깋을 위해 마스크 저장
             timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
             mask_path = DEBUG_DIR / f"{button_type}_mask_{timestamp}.png"
             cv2.imwrite(str(mask_path), mask)
@@ -405,7 +450,7 @@ def wait_and_click(image_path, confidence=DEFAULT_CONFIDENCE, timeout=CLICK_TIME
         log.debug("친구 추가 아이콘 특별 감지 시도 중.")
         # 방법 1: 직접 컨투어 감지
         icon_pos = find_add_friend_icon_direct(region)
-        if icon_pos:
+        if (icon_pos):
             pyautogui.moveTo(icon_pos[0], icon_pos[1], duration=0.1)
             time.sleep(SHORT_SLEEP)
             pyautogui.click()
@@ -495,7 +540,7 @@ def wait_and_click(image_path, confidence=DEFAULT_CONFIDENCE, timeout=CLICK_TIME
         fail_region = get_kakaotalk_window_region() or (0,0, pyautogui.size()[0], pyautogui.size()[1])
         fail_timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         fail_path = DEBUG_DIR / f"fail_capture_{os.path.basename(image_path)}_{fail_timestamp}.png"
-        pyautogui.screenshot(str(fail_path), region=fail_region)
+        capture_region(fail_region, fail_path).save(str(fail_path))
         log.debug(f"실패 스크린샷 저장됨: {fail_path}")
     except Exception as e:
         log.error(f"실패 스크린샷 저장 실패: {e}")
@@ -507,7 +552,10 @@ def navigate_to_friends_tab():
     """Cmd+1을 사용하여 KakaoTalk 친구 탭으로 이동합니다."""
     log.info("친구 탭으로 이동 중...")
     try:
-        pyautogui.hotkey('command', FRIENDS_TAB_SHORTCUT)
+        keyboard.press(Key.cmd)
+        keyboard.press(FRIENDS_TAB_SHORTCUT)
+        keyboard.release(FRIENDS_TAB_SHORTCUT)
+        keyboard.release(Key.cmd)
         time.sleep(MEDIUM_SLEEP) # 탭 로딩 시간 확보
         log.info("친구 탭으로 이동 완료.")
         return True
@@ -534,31 +582,33 @@ def add_friend(username, phone):
         wait_and_click(ICON_ADD, confidence=0.6, timeout=10) # 필요시 특정 신뢰도 사용
         time.sleep(MEDIUM_SLEEP) # 친구 추가 대화 상자 대기
 
-        # '연락처로 추가' 탭이 기본이거나 쉽게 접근 가능하다고 가정
-        # 그렇지 않다면, 먼저 올바른 탭/버튼을 클릭하는 단계 추가
-
         # 2. 사용자 이름 입력 (선택 사항, 전화번호로 추가 시 필요 없을 수 있음)
-        # log.debug(f"사용자 이름 입력: {username}")
-        # pyperclip.copy(username)
-        # time.sleep(SHORT_SLEEP)
-        # pyautogui.hotkey('command', PASTE_SHORTCUT)
-        # time.sleep(SHORT_SLEEP)
-        # pyautogui.press(TAB_KEY) # 다음 필드로 이동 (필요시 탭 횟수 조정)
-        # time.sleep(SHORT_SLEEP)
+        log.debug(f"사용자 이름 입력: {username}")
+        pyperclip.copy(username)
+        time.sleep(SHORT_SLEEP)
+        keyboard.press(Key.cmd)
+        keyboard.press(PASTE_SHORTCUT)
+        keyboard.release(PASTE_SHORTCUT)
+        keyboard.release(Key.cmd)
+        time.sleep(SHORT_SLEEP)
+        for _ in range(3):
+            keyboard.press(Key.tab)
+            keyboard.release(Key.tab)
+            time.sleep(0.2)
+        time.sleep(SHORT_SLEEP)
 
         # 3. 전화번호 입력
         # 전화번호 입력 필드 찾기. 탭 또는 클릭 필요할 수 있음.
         # 친구 추가 아이콘 클릭 후 또는 사용자 이름 입력 + 탭 후에 전화번호 필드가 활성화된다고 가정
         log.debug(f"전화번호 입력: {phone}")
-        # 필드 먼저 지우기 (선택 사항이지만 더 안전함)
-        pyautogui.hotkey('command', 'a') # 전체 선택
-        time.sleep(SHORT_SLEEP)
-        pyautogui.press('delete') # 삭제
-        time.sleep(SHORT_SLEEP)
+
         # 전화번호 붙여넣기
         pyperclip.copy(phone)
         time.sleep(SHORT_SLEEP)
-        pyautogui.hotkey('command', PASTE_SHORTCUT)
+        keyboard.press(Key.cmd)
+        keyboard.press(PASTE_SHORTCUT)
+        keyboard.release(PASTE_SHORTCUT)
+        keyboard.release(Key.cmd)
         time.sleep(MEDIUM_SLEEP)
 
         # 4. 추가/확인 버튼 클릭 (보통 노란색)
@@ -570,7 +620,8 @@ def add_friend(username, phone):
         if not button_pos:
             # 대체: 버튼을 찾지 못한 경우 Enter 키 누르기 시도
             log.warning("색상 감지로 노란색 버튼을 찾지 못했습니다. Enter 키 누르기 시도.")
-            pyautogui.press('enter')
+            keyboard.press(Key.enter)
+            keyboard.release(Key.enter)
             # raise Exception("노란색 '추가' 버튼을 찾을 수 없습니다.") # 또는 Enter 시도
         else:
             pyautogui.moveTo(button_pos[0], button_pos[1], duration=0.1)
@@ -580,63 +631,62 @@ def add_friend(username, phone):
         time.sleep(LONG_SLEEP) # 확인 대화 상자/메시지 대기
 
         # 5. OCR을 통해 결과 확인
-        log.debug("OCR을 사용하여 결과 메시지 확인 중...")
-        region = get_kakaotalk_window_region() # 영역 새로고침
-        if not region: raise Exception("OCR 확인 전 KakaoTalk 창 영역 손실.")
-
-        # OCR 영역 정의 (팝업 또는 하단 근처 영역일 가능성 높음)
-        # 메시지가 나타나는 위치에 따라 이 좌표 조정
-        ocr_y_start = region[1] + region[3] - 200 # 하단 200px 확인
-        ocr_h = 180 # OCR 영역 높이
-        ocr_region = (
-            region[0] + 20,             # 가장자리에서 약간 들여쓰기
-            ocr_y_start,
-            region[2] - 40,             # 너비 약간 줄이기
-            ocr_h
-        )
-
+        log.debug("OCR 캡처용 팝업 영역 재설정 중...")
+        popup_bounds = get_kakaotalk_popup_or_main_window_region().get('bounds')
+        if not popup_bounds:
+            raise Exception("OCR 확인 전 KakaoTalk 팝업/메인 창 영역 손실.")
+        x, y, w, h = popup_bounds
+        # 좌측 50% 제거, 우측 부분 = (50% + 25%)
+        left_cut_ratio = 0.5
+        right_extend_ratio = left_cut_ratio * 0.5
+        cap_x = x + int(w * left_cut_ratio)
+        cap_w = int(w * (1 - left_cut_ratio + right_extend_ratio))
+        # 상하 20%씩 줄이기
+        top_cut_ratio = 0.2
+        bottom_cut_ratio = 0.2
+        cap_y = y + int(h * top_cut_ratio)
+        cap_h = int(h * (1 - top_cut_ratio - bottom_cut_ratio))
+        capture_reg = (cap_x, cap_y, cap_w, cap_h)
         timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-        ocr_img_path = DEBUG_DIR / f"ocr_result_area_{timestamp}.png"
-        try:
-            result_img = pyautogui.screenshot(str(ocr_img_path), region=ocr_region)
-            if result_img is None: raise Exception("OCR 영역 캡처 실패.")
-            log.debug(f"OCR 영역 스크린샷 저장됨: {ocr_img_path}")
+        popup_path = DEBUG_DIR / f"popup_capture_{timestamp}.png"
+        result_img = capture_region(capture_reg, popup_path)
+        log.debug(f"OCR 캡처용 영역 스크린샷 저장됨: {popup_path}")
 
-            # OCR 수행
-            # Tesseract 설정 추가 (예: --psm 6 for single block of text)
-            custom_config = r'--oem 3 --psm 6 -l kor+eng'
-            result_text = pytesseract.image_to_string(result_img, config=custom_config, lang="kor+eng")
-            log.info(f"OCR 결과 텍스트: '{result_text.strip()}'")
+        # OCR 수행
+        custom_config = r'--oem 3 --psm 6 -l kor+eng'
+        result_text = pytesseract.image_to_string(result_img, config=custom_config, lang="kor+eng")
+        log.info(f"OCR 결과 텍스트: '{result_text.strip()}'")
 
-            # OCR 결과 확인
-            if OCR_SUCCESS in result_text:
-                status = "success"
-                reason = "친구 추가 성공."
-                log.info(f"[성공] {reason}")
-            elif OCR_ALREADY_REGISTERED in result_text:
-                status = "already_registered"
-                reason = "이미 등록된 친구입니다."
-                log.warning(f"[건너뜀] {reason}")
-            elif OCR_NOT_ALLOWED in result_text:
-                status = "not_allowed"
-                reason = "이 번호는 친구로 추가할 수 없습니다."
-                log.error(f"[실패] {reason}")
-            else:
-                status = "fail"
-                reason = f"OCR을 통한 결과 메시지 인식 불가: {result_text.strip()}"
-                log.error(f"[실패] {reason}")
-
-        except pytesseract.TesseractNotFoundError:
-             reason = "Tesseract OCR 엔진을 찾을 수 없습니다."
-             log.critical(reason)
-             raise Exception(reason) # Tesseract 없으면 진행 불가
-        except Exception as ocr_e:
-             reason = f"OCR 확인 중 오류 발생: {ocr_e}"
-             log.error(reason, exc_info=True)
-             # 상태는 'fail' 유지
+        # OCR 결과에서 줄바꿈, 공백 제거
+        normalized_text = result_text.replace('\n', '').replace('\r', '').replace(' ', '')
+        OCR_SUCCESS_PATTERNS = [
+            "친구등록이완료되었습니다",
+            "친구등록에성공했습니다",
+            "친구추가가완료되었습니다",
+            "친구추가에성공했습니다"
+        ]
+        if any(success_str in normalized_text for success_str in OCR_SUCCESS_PATTERNS):
+            status = "success"
+            reason = "친구 추가 성공."
+            log.info(f"[성공] {reason}")
+        elif OCR_ALREADY_REGISTERED.replace(' ', '') in normalized_text:
+            status = "already_registered"
+            reason = "이미 등록된 친구입니다."
+            log.warning(f"[건너뜀] {reason}")
+        elif OCR_NOT_ALLOWED.replace(' ', '') in normalized_text:
+            status = "not_allowed"
+            reason = "이 번호는 친구로 추가할 수 없습니다."
+            log.error(f"[실패] {reason}")
+        else:
+            status = "fail"
+            reason = f"OCR을 통한 결과 메시지 인식 불가: {result_text.strip()}"
+            log.error(f"[실패] {reason}")
 
         # 친구 추가 대화 상자/창 닫기 (Cmd+W가 작동한다고 가정)
-        pyautogui.hotkey('command', CLOSE_WINDOW_SHORTCUT)
+        keyboard.press(Key.cmd)
+        keyboard.press('w')
+        keyboard.release('w')
+        keyboard.release(Key.cmd)
         time.sleep(MEDIUM_SLEEP)
 
     except FileNotFoundError as e:
@@ -654,7 +704,10 @@ def add_friend(username, phone):
         # 오류 발생 시 창 닫기 시도
         try:
             if focus_kakaotalk():
-                pyautogui.hotkey('command', CLOSE_WINDOW_SHORTCUT)
+                keyboard.press(Key.cmd)
+                keyboard.press('w')
+                keyboard.release('w')
+                keyboard.release(Key.cmd)
                 time.sleep(MEDIUM_SLEEP)
         except Exception as close_e:
             log.warning(f"오류 후 창 닫기 실패: {close_e}")

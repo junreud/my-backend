@@ -9,6 +9,54 @@ import { createLogger } from "../lib/logger.js";
 
 const logger = createLogger("AdminRoutesLogger");
 const router = express.Router();
+
+/**
+ * GET /api/admin/work-histories/options
+ * 관리자 전용 - 작업 이력 옵션 목록 조회 (작업 유형, 필터링 옵션 등)
+ */
+router.get('/work-histories/options', passport.authenticate('jwt', { session: false }), async (req, res) => {
+  try {
+    // 관리자 권한 검증
+    if (!req.user || req.user.role !== 'admin') {
+      logger.warn(`권한 없는 작업 이력 옵션 조회 시도: ${req.user ? req.user.email : 'Unknown'}`);
+      return res.status(403).json({ 
+        success: false, 
+        message: "관리자 권한이 필요한 작업입니다." 
+      });
+    }
+
+    // 작업 유형 옵션 목록 (enum과 일치하게 유지)
+    const workTypeOptions = ["트래픽", "저장하기", "블로그배포"];
+    
+    // 실행사 옵션 목록 추가
+    const executorOptions = ["토스", "호올스"];
+    
+    // 자주 사용되는 필터링 옵션들
+    const filterOptions = {
+      status: ["완료", "진행중", "대기중", "실패"],
+      sortBy: ["최신순", "오래된순", "사용자명", "업체명"]
+    };
+
+    logger.info(`관리자(${req.user.email})가 작업 이력 옵션 조회`);
+    
+    res.json({
+      success: true,
+      data: {
+        workTypes: workTypeOptions,
+        executors: executorOptions,
+        filters: filterOptions
+      }
+    });
+    
+  } catch (error) {
+    logger.error('작업 이력 옵션 조회 오류:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: '서버 오류가 발생했습니다.' 
+    });
+  }
+});
+
 // 관리자 전용 작업 이력 조회 API (최적화됨)
 router.get('/work-histories', passport.authenticate('jwt', { session: false }), async (req, res) => {
     try {
@@ -194,7 +242,7 @@ router.delete('/work-histories/:id', passport.authenticate('jwt', { session: fal
 
 /**
  * GET /api/admin/users-with-places
- * 관리자 전용 API - 모든 일반 사용자와 그들의 등록 업체 정보 조회
+ * 관리자 전용 API - 업체가 등록된 일반 사용자와 그들의 등록 업체 정보 조회
  */
 router.get('/users-with-places', passport.authenticate('jwt', { session: false }), async (req, res) => {
     try {
@@ -207,38 +255,39 @@ router.get('/users-with-places', passport.authenticate('jwt', { session: false }
         });
       }
   
-      // 2. 모든 일반 사용자(admin 제외) 조회 - 필터링 조건 추가
+      // 2. 모든 일반 사용자(admin 제외) 조회 - 업체가 있는 사용자만 조회
       const users = await User.findAll({
         where: {
-          role: { [Op.ne]: 'admin' }, // admin이 아닌 사용자들만
-          email: { [Op.ne]: null },   // 이메일이 있는 사용자만
-          name: { [Op.ne]: null }     // 이름이 있는 사용자만
+          role: { [Op.ne]: 'admin' } // admin이 아닌 사용자들만
         },
         attributes: ['id', 'name', 'email', 'phone'], // 필요한 필드만 선택
         include: [{
           model: Place,
           as: 'places',
-          attributes: ['place_name'], // 업체명만 필요
-          required: true             // 최소 1개 이상의 업체가 있는 사용자만 (INNER JOIN)
+          attributes: ['id', 'place_name'], // place_id와 업체명 함께 가져오기
+          required: true // 업체가 있는 사용자만 포함 (INNER JOIN)
         }]
       });
   
       // 3. 결과 가공
       const formattedUsers = users.map(user => {
-        // 사용자가 가진 모든 업체명을 배열로 추출
+        // 사용자가 가진 모든 업체명과 ID를 배열로 추출
         const placeNames = user.places.map(place => place.place_name);
+        const placeIds = user.places.map(place => place.id.toString()); // ID를 문자열로 변환하여 저장
         
         return {
           user_id: user.id,
-          name: user.name,          // 이미 null이 아님이 보장됨
-          email: user.email,        // 이미 null이 아님이 보장됨
+          name: user.name || '이름 없음',
+          email: user.email || '이메일 없음',
           phone: user.phone || '연락처 없음',
-          place_names: placeNames,  // 최소 1개 이상 존재함이 보장됨
+          place_names: placeNames,
+          place_ids: placeIds,
           place_count: placeNames.length
         };
       });
   
       logger.info(`관리자(${req.user.email})가 사용자 목록 조회: ${formattedUsers.length}명 조회됨`);
+      logger.debug(`API 응답 데이터 예시(첫번째 항목): ${JSON.stringify(formattedUsers[0] || {})}`);
   
       // 4. 응답 전송
       res.json({

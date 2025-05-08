@@ -12,7 +12,7 @@ export const getAllCustomers = async (req, res) => {
     const customers = await CustomerInfo.findAll({
       include: [{
         model: ContactInfo,
-        attributes: ['phone_number', 'contact_person']
+        attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
       }]
     });
     
@@ -39,7 +39,7 @@ export const getCustomerById = async (req, res) => {
     const customer = await CustomerInfo.findByPk(id, {
       include: [{
         model: ContactInfo,
-        attributes: ['phone_number', 'contact_person']
+        attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
       }]
     });
     
@@ -74,7 +74,7 @@ export const getCustomerByPostingId = async (req, res) => {
       where: { posting_id: postingId },
       include: [{
         model: ContactInfo,
-        attributes: ['phone_number', 'contact_person']
+        attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
       }]
     });
     

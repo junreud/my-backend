@@ -17,6 +17,10 @@ import {
   randomDelay
 } from "../config/crawler.js";
 
+// Add imports for models
+import Keyword from '../../models/Keyword.js';
+import SameResultKeyword from '../../models/SameResultKeyword.js';
+
 /**
  * (A) Puppeteer: 네이버에서 키워드 검색 → 상위 20개 업체명 추출
  *     (모바일 or PC를 cookie + UA로 일치)
@@ -333,7 +337,33 @@ export async function groupKeywordsByNaverTop10(keywordList) {
 
     // 그룹화
     const grouped = groupByTop10(validResults);
-    
+
+    // Persist same-result keyword relationships
+    try {
+      for (const group of grouped) {
+        // extract keyword strings from combinedKeyword or from group.items
+        const keywords = group.items.map(i => i.keyword);
+        // fetch keyword records
+        const keywordRecords = await Keyword.findAll({ where: { keyword: keywords } });
+        const idMap = keywordRecords.reduce((acc, k) => { acc[k.keyword] = k.id; return acc; }, {});
+        // create unique pairs
+        for (let i = 0; i < keywords.length; i++) {
+          for (let j = i + 1; j < keywords.length; j++) {
+            const id1 = idMap[keywords[i]];
+            const id2 = idMap[keywords[j]];
+            if (!id1 || !id2) continue;
+            const [kwA, kwB] = id1 < id2 ? [id1, id2] : [id2, id1];
+            await SameResultKeyword.findOrCreate({
+              where: { keyword_id: kwA, related_keyword_id: kwB }
+            });
+          }
+        }
+      }
+      logger.info(`[INFO] Saved ${grouped.length} same-result keyword groups to DB`);
+    } catch (dbErr) {
+      logger.error('[ERROR] saving same-result keyword relations:', dbErr.message);
+    }
+
     // 반환 데이터 형식 구성
     return grouped.map((group) => {
       const combinedKeyword = group.items.map((i) => i.keyword).join(", ");

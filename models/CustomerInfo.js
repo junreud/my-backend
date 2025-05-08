@@ -33,6 +33,11 @@ const CustomerInfo = sequelize.define('CustomerInfo', {
     allowNull: true,
     comment: '네이버 플레이스 URL',
   },
+  source_filter: {
+    type: DataTypes.STRING(255),
+    allowNull: true,
+    comment: '데이터 소스 또는 필터 정보'
+  },
   created_at: { // Sequelize가 내부적으로 인식하는 이름
     type: DataTypes.DATE,
     defaultValue: DataTypes.NOW,

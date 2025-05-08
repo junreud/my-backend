@@ -10,6 +10,7 @@ const PlaceDetailResult = sequelize.define('PlaceDetailResult', {
   place_id: {
     type: DataTypes.BIGINT.UNSIGNED,
     allowNull: false,
+    unique: 'unique_place_id',
   },
   blog_review_count: {
     type: DataTypes.INTEGER,

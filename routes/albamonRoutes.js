@@ -5,10 +5,11 @@ import passport from 'passport';
 import { 
     crawlAlbamonController,
     processBusinessContacts,
-    batchProcessJobIds,
     getCustomersWithContacts
 } from '../controllers/albamonController.js';
 import { createLogger } from '../lib/logger.js';
+import CustomerInfo from '../models/CustomerInfo.js';
+import { updateFavorite, updateBlacklist } from '../controllers/contactController.js';
 
 const router = Router();
 const logger = createLogger('AlbamonRoutes');
@@ -35,7 +36,6 @@ router.post('/crawl-search', authenticateJWT, asyncHandler(async (req, res) => {
   return await crawlAlbamonController(req, res);
 }));
 
-
 // 연락처 정보 크롤링 및 저장 라우터
 router.post('/contact', authenticateJWT, asyncHandler(async (req, res) => {
   logger.debug('/contact 라우트 접근됨');
@@ -44,5 +44,34 @@ router.post('/contact', authenticateJWT, asyncHandler(async (req, res) => {
 }));
 
 router.get('/data', authenticateJWT, asyncHandler(getCustomersWithContacts));
+
+// 고객 정보 삭제 라우터 추가
+router.delete('/delete/:id', authenticateJWT, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  try {
+    const deleted = await CustomerInfo.destroy({ where: { id } });
+    if (deleted) {
+      return res.json({ success: true, message: '고객 정보가 삭제되었습니다.' });
+    } else {
+      return res.status(404).json({ success: false, message: '고객 정보를 찾을 수 없습니다.' });
+    }
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}));
+
+// 연락처 즐겨찾기 상태 업데이트
+router.patch(
+  '/contacts/:contactId/favorite',
+  authenticateJWT,
+  updateFavorite
+);
+
+// 연락처 블랙리스트 상태 업데이트
+router.patch(
+  '/contacts/:contactId/blacklist',
+  authenticateJWT,
+  updateBlacklist
+);
 
 export default router;

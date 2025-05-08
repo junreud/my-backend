@@ -36,15 +36,17 @@ router.post('/login', (req, res, next) => {
       // (1) RefreshToken -> HttpOnly 쿠키
       res.cookie('refreshToken', tokens.refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'development', // 개발 환경에서만 secure:true
+        secure: process.env.NODE_ENV !== 'development',
         sameSite: 'none',
       });
-
-      // (2) AccessToken -> JSON 응답
-      return res.json({
-        message: '로그인 성공!',
-        accessToken: tokens.accessToken
+      // (2) AccessToken -> HttpOnly 쿠키 (for SSR token retrieval)
+      res.cookie('token', tokens.accessToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV !== 'development',
+        sameSite: 'none',
       });
+      // (3) 로그인 성공 응답
+      return res.json({ message: '로그인 성공!' });
     } catch (error) {
       console.error('[ERROR] issueTokens:', error);
       return res.status(500).json({ message: '토큰 발급 실패' });
@@ -184,5 +186,7 @@ router.post('/checkEmailAndPassword', authController.checkEmailAndPassword);
 router.post("/link-accounts", authController.linkAccounts);
 router.post('/addinfo', authController.addInfo);
 router.post('/refresh', authController.refresh);
+// 로그아웃 라우트
+router.post('/logout', authController.logout);
 
 export default router;

@@ -47,6 +47,8 @@ def add_friends(request: AddFriendsRequest):
     try:
         # Pydantic 모델을 사용하여 받은 데이터를 Python dict 리스트로 변환
         friends_data = [friend.dict() for friend in request.friends]
+        # DEBUG: 로그로 받은 친구 목록 출력
+        print(f"DEBUG main.add_friends received friends_data: {friends_data}")
         results = add_friends_via_kakao(friends_data)
         return {"results": results}
     except Exception as e:

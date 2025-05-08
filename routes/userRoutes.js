@@ -10,6 +10,7 @@ import KeywordCrawlResult  from "../models/KeywordBasicCrawlResult.js";
 import UserPlaceKeyword  from "../models/UserPlaceKeyword.js";
 import PlaceDetailResult from "../models/PlaceDetailResult.js";
 import KeywordBasicCrawlResult from "../models/KeywordBasicCrawlResult.js";
+import WorkHistory from "../models/WorkHistory.js";
 import { Op } from "sequelize"; // Add this import for Op.between
 import { createLogger } from "../lib/logger.js";
 const logger = createLogger("UserRoutesLogger");
@@ -187,9 +188,6 @@ router.get("/user-keywords", authenticateJWT, async (req, res) => {
       keywordMap[k.id] = k;
     });
 
-    logger.debug("[user-keywords] userKeywords:", userKeywords);
-    logger.debug("[user-keywords] keywordIds:", keywordIds);
-
     // 응답 형식 가공
     const formattedKeywords = userKeywords.map(uk => ({
       id: uk.id,
@@ -200,8 +198,6 @@ router.get("/user-keywords", authenticateJWT, async (req, res) => {
       created_at: uk.created_at,
       updated_at: uk.updated_at
     }));
-
-    logger.debug("[user-keywords] formattedKeywords:", formattedKeywords);
 
     return res.json(formattedKeywords);
   } catch (err) {
@@ -322,12 +318,15 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
     });
     
     // 키워드별 데이터 개수 로깅
+    // 상세 로그 비활성화
+    /*
     logger.info(`[keyword-ranking-details] 키워드별 데이터 개수:`);
     for (const keywordId in keywordDataCounts) {
       if (keywordMap[keywordId]) {
         logger.info(`- 키워드 "${keywordMap[keywordId]}" (ID: ${keywordId}): ${keywordDataCounts[keywordId]}개`);
       }
     }
+    */
 
     logger.debug(`[DEBUG] 총 ${keywords.length}개 키워드에 대한 ${basicResults.length}개 데이터 조회됨`);
 
@@ -371,8 +370,6 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       },
       order: [["last_crawled_at", "DESC"]]
     });
-
-    logger.debug(`[DEBUG] Detail 데이터 ${detailResults.length}개 조회됨`);
 
     // 날짜별로 가장 최신 데이터를 매핑
     const detailMap = {};
@@ -428,7 +425,8 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
             place_id: parseInt(pid),
             place_name: b.place_name,
             category: b.category,
-            savedCount: d ? d.savedCount : null,
+            // savedCount comes only from detail results
+            savedCount: d?.savedCount ?? null,
             blog_review_count: d ? d.blog_review_count : null,
             receipt_review_count: d ? d.receipt_review_count : null,
             keywordList: d?.keywordList
@@ -460,15 +458,15 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       return (a.ranking || 999) - (b.ranking || 999);
     });
 
-    // 최종 결과에서 키워드별 데이터 개수 로깅
+    // 최종 결과에서 키워드별 데이터 개수 로깅 - 비활성화
+    /*
     logger.info(`[keyword-ranking-details] 최종 응답의 키워드별 데이터 개수:`);
     for (const keywordId in keywordFinalCounts) {
       if (keywordMap[keywordId]) {
         logger.info(`- 키워드 "${keywordMap[keywordId]}" (ID: ${keywordId}): ${keywordFinalCounts[keywordId]}개 (최종)`);
       }
     }
-
-    // 전체 로깅
+    */
     logger.info(`[keyword-ranking-details] 총 ${finalData.length}개 결과 반환: userId=${userId}, placeId=${placeId}, 키워드 ${keywordIds.length}개`);
 
     // 응답에 키워드별 데이터 개수 추가 (선택사항)
@@ -485,6 +483,45 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
     return res.status(500).json({ 
       success: false,
       message: "서버 오류가 발생했습니다." 
+    });
+  }
+});
+
+/**
+ * GET /api/user/work-histories
+ * 현재 로그인한 사용자의 작업 이력 조회 API
+ */
+router.get('/user/work-histories', authenticateJWT, async (req, res) => {
+  try {
+    if (!req.user || !req.user.id) {
+      logger.warn('인증되지 않은 사용자가 작업 이력을 요청함');
+      return res.status(401).json({ 
+        success: false, 
+        message: "로그인이 필요합니다." 
+      });
+    }
+
+    const userId = req.user.id;
+    logger.info(`사용자(ID: ${userId})의 작업 이력 조회 요청`);
+
+    // WorkHistory 모델에서 정의한 findByUserId 메서드 사용
+    const workHistories = await WorkHistory.findAll({
+      where: { user_id: userId },
+      order: [["created_at", "DESC"]]
+    });
+
+    logger.info(`사용자(ID: ${userId})의 작업 이력 ${workHistories.length}개 조회됨`);
+
+    res.json({
+      success: true,
+      data: workHistories
+    });
+    
+  } catch (error) {
+    logger.error('사용자 작업 이력 조회 오류:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: '서버 오류가 발생했습니다.' 
     });
   }
 });

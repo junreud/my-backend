@@ -1,5 +1,5 @@
 // crawlerAxios.js
-import fetch from 'node-fetch';
+import { fetch } from 'undici';
 import { loadMobileUAandCookies } from '../../config/crawler.js';
 
 /**
@@ -25,12 +25,11 @@ export async function fetchDetailHtml(placeId, cookieStr = null, userAgent = nul
       method: 'GET',
       headers: {
         'Cookie': cookieStr,
-        'User-Agent': userAgent,
+        'User-Agent': userAgent
       },
-      signal: controller.signal // 타임아웃 신호 추가
+      redirect: 'follow',
+      signal: controller.signal
     });
-    
-    clearTimeout(timeoutId); // 타임아웃 해제
     
     if (!res.ok) {
       throw new Error(`Failed to fetch detail for placeId=${placeId}: ${res.status} ${res.statusText}`);

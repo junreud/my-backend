@@ -164,7 +164,7 @@ WorkHistory.init(
     },
     // 5) executor (작업 실행사)
     executor: {
-      type: DataTypes.ENUM("토스","호올스"),
+      type: DataTypes.STRING(50),
       allowNull: false,
     },
     // 6) contract_keyword (계약키워드)

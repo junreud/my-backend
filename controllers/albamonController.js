@@ -1,5 +1,6 @@
 // 컨트롤러 - 비즈니스 로직 담당
 import { Op } from 'sequelize';
+import sequelize from '../config/db.js';
 import * as cheerio from 'cheerio';
 import 'dotenv/config';
 import { createLogger } from '../lib/logger.js';
@@ -8,8 +9,7 @@ import { loadAlbamonUAandCookies } from '../config/albamonConfig.js';
 import { getLoggedInSession } from '../config/albamonConfig.js';
 import { randomDelay } from '../config/crawler.js';
 import { io } from '../server.js';
-import { CustomerInfo, ContactInfo } from '../models/index.js';
-import sequelize from '../config/db.js';
+import { CustomerInfo, ContactInfo, CustomerContactMap } from '../models/index.js';
 import { batchProcessNaverPlaceUrls } from '../services/naverPlaceService.js';
 const logger = createLogger('AlbamonController');
 
@@ -139,7 +139,7 @@ const getCommonHeaders = (cookieStr, ua) => {
 };
 
 // 타임아웃 가능한 fetch 함수
-const fetchWithTimeout = async (url, options, timeout = 15000) => {
+const fetchWithTimeout = async (url, options, timeout = 25000) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   
@@ -340,13 +340,49 @@ export const batchProcessJobIds = async (req, res) => {
           }
         }
         
+        // source_filter 자동 조합
+        // (1) 파싱종류: area → '지역', total → '검색'
+        const parsingType = business.parsingType || business.parsing_type || '';
+        const region = business.region || '';
+        const includeKeywords = business.includeKeywords || business.include_keywords || '';
+        const excludeKeywords = business.excludeKeywords || business.exclude_keywords || '';
+        let parsingTypeLabel = '';
+        if (parsingType === 'area') parsingTypeLabel = '지역';
+        else if (parsingType === 'total') parsingTypeLabel = '검색';
+        else parsingTypeLabel = parsingType;
+
+        let regionValue = '';
+        if (parsingType === 'area') {
+          regionValue = Array.isArray(region) ? region.join('&') : region;
+        } else if (parsingType === 'total') {
+          regionValue = includeKeywords || '';
+        }
+
+        let sourceFilterParts = [];
+        if (parsingTypeLabel) {
+          sourceFilterParts.push(`파싱종류:${parsingTypeLabel}`);
+        }
+        if (regionValue) {
+          sourceFilterParts.push(`지역:${regionValue}`);
+        }
+        if (includeKeywords) {
+          const includeStr = Array.isArray(includeKeywords) ? includeKeywords.join(',') : includeKeywords;
+          sourceFilterParts.push(`포함:${includeStr}`);
+        }
+        if (excludeKeywords) {
+          const excludeStr = Array.isArray(excludeKeywords) ? excludeKeywords.join(',') : excludeKeywords;
+          sourceFilterParts.push(`제외:${excludeStr}`);
+        }
+        const source_filter = sourceFilterParts.join(', ');
+
         // 중복 없음, 크롤링 대상에 추가
         uniqueJobIds.add(jobId);
         jobsToProcess.push({
           jobId,
           title,
           companyName,
-          address
+          address,
+          source_filter
         });
       }
       
@@ -420,26 +456,7 @@ export const batchProcessJobIds = async (req, res) => {
                             if (phone && phone.includes('안심번호')) {
                             logger.debug(`ID ${jobId}: 안심번호 발견: "${phone}", 저장 건너뜀`);
                             await page.close();
-                            
-                            // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
-                            const existingCustomer = await CustomerInfo.findOne({
-                                where: { posting_id: jobId }
-                            });
-                            
-                            if (existingCustomer) {
-                                logger.debug(`ID ${jobId}: 안심번호로 인해 DB에서 삭제`);
-                                await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
-                                await existingCustomer.destroy();
-                            }
-                            
-                            return {
-                                success: true,
-                                data: {
-                                jobId,
-                                filtered: true,
-                                filterReason: `안심번호 필터링: "${phone}"`
-                                }
-                            };
+                            return { success: false, error: '안심번호 발견' };
                             }
                         }
                         
@@ -455,132 +472,94 @@ export const batchProcessJobIds = async (req, res) => {
                     
                     await page.close();
                     
-                    // 특정 담당자 키워드가 있는 경우 필터링
-                    const filterKeywords = ['채용담당자', '인사담당자', '담당자', '매니저', '담당채용자', '점장', '채용담당', '매니져', '인사담당'];
-                    
-                    if (contactPerson && filterKeywords.some(keyword => contactPerson.includes(keyword))) {
-                    logger.debug(`ID ${jobId}: 필터링된 담당자 키워드 발견: "${contactPerson}", 저장 건너뜀`);
-                    
-                    // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
-                    const existingCustomer = await CustomerInfo.findOne({
-                        where: { posting_id: jobId }
-                    });
-                    
-                    if (existingCustomer) {
-                        logger.debug(`ID ${jobId}: 담당자 키워드로 인해 DB에서 삭제`);
-                        await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
-                        await existingCustomer.destroy();
-                    }
-                    
-                    return {
-                        success: true,
-                        data: {
-                        jobId,
-                        filtered: true,
-                        filterReason: `담당자 키워드 필터링: "${contactPerson}"`
-                        }
-                    };
-                    }
-                    
                     // 전화번호가 없는 경우 필터링
                     if (!phone || phone === '') {
                     logger.debug(`ID ${jobId}: 전화번호 없음, 저장 건너뜀`);
+                    return { success: false, error: '전화번호 없음' };
+                    }
                     
-                    // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
-                    const existingCustomer = await CustomerInfo.findOne({
+                    // 특정 담당자 키워드가 있는 경우 필터링
+                    const filterKeywords = ['채용담당자', '인사담당자', '담당자', '매니저', '담당채용자', '점장', '채용담당', '매니져', '인사담당'];
+                    if (contactPerson && filterKeywords.some(keyword => contactPerson.includes(keyword))) {
+                      logger.debug(`ID ${jobId}: 필터링된 담당자 키워드 발견: "${contactPerson}", 저장 건너뜀`);
+                      // 이미 DB에 저장된 정보가 있는지 확인하고 삭제
+                      const existingCustomer = await CustomerInfo.findOne({
                         where: { posting_id: jobId }
-                    });
-                    
-                    if (existingCustomer) {
-                        logger.debug(`ID ${jobId}: 전화번호 없어서 DB에서 삭제`);
+                      });
+                      if (existingCustomer) {
+                        logger.debug(`ID ${jobId}: 담당자 키워드로 인해 DB에서 삭제`);
                         await ContactInfo.destroy({ where: { customer_id: existingCustomer.id } });
                         await existingCustomer.destroy();
-                    }
-                    
-                    return {
+                      }
+                      return {
                         success: true,
                         data: {
-                        jobId, 
-                        filtered: true,
-                        filterReason: '전화번호 없음'
+                          jobId,
+                          filtered: true,
+                          filterReason: `담당자명 필터링: \"${contactPerson}\"`
                         }
-                    };
+                      };
                     }
                     
-                    // 모든 검증 통과 후 데이터를 수집합니다 (즉시 DB 저장하지 않음)
-                    // 기존 고객 정보가 있는지 확인
-                    const existingCustomer = await CustomerInfo.findOne({
-                        where: { posting_id: jobId }
+                    // 실시간 DB 저장
+                    let customer = await CustomerInfo.findOne({ where: { posting_id: jobId } });
+                    if (!customer) {
+                    customer = await CustomerInfo.create({
+                        posting_id: jobId,
+                        title: title || detailCompanyName,
+                        company_name: detailCompanyName || companyName,
+                        address: detailAddress || address,
+                        source_filter: item.source_filter
+                    });
+                    } else {
+                    await CustomerInfo.update({
+                        title: title || detailCompanyName,
+                        company_name: detailCompanyName || companyName,
+                        address: detailAddress || address,
+                        source_filter: item.source_filter
+                    }, { where: { id: customer.id } });
+                    }
+                    
+                    let contact = await ContactInfo.findOne({
+                    where: {
+                        phone_number: phone,
+                        contact_person: contactPerson
+                    }
                     });
                     
-                    if (existingCustomer) {
-                        // 기존 고객 정보가 있으면 업데이트를 위한 객체 추가
-                        customersToSave.push({
-                            type: 'update',
-                            customer: {
-                                id: existingCustomer.id,
-                                posting_id: jobId,
-                                title: title || detailCompanyName,
-                                company_name: detailCompanyName || companyName,
-                                address: detailAddress || address
-                            },
-                            contact: {
-                                customer_id: existingCustomer.id,
-                                phone_number: phone,
-                                contact_person: contactPerson || ''
-                            }
-                        });
-                        
-                        logger.debug(`ID ${jobId}: 업데이트할 정보 수집 완료`);
-                    } else {
-                        // 신규 정보 생성을 위한 객체 추가
-                        customersToSave.push({
-                            type: 'create',
-                            customer: {
-                                posting_id: jobId,
-                                title: title || detailCompanyName,
-                                company_name: detailCompanyName || companyName,
-                                address: detailAddress || address
-                            },
-                            contact: {
-                                phone_number: phone,
-                                contact_person: contactPerson || ''
-                            }
-                        });
-                        
-                        logger.debug(`ID ${jobId}: 신규 정보 수집 완료`);
+                    if (!contact) {
+                    contact = await ContactInfo.create({
+                        phone_number: phone,
+                        contact_person: contactPerson
+                    });
                     }
                     
-                    return {
-                        success: true,
-                        data: {
-                            jobId,
-                            companyName: detailCompanyName || companyName,
-                            address: detailAddress || address,
-                            phone,
-                            contactPerson: contactPerson || '',
-                            fromCache: false,
-                            filtered: false
-                        }
-                    };
+                    const exists = await CustomerContactMap.findOne({
+                    where: {
+                        customer_id: customer.id,
+                        contact_id: contact.id
+                    }
+                    });
                     
+                    if (!exists) {
+                    await CustomerContactMap.create({
+                        customer_id: customer.id,
+                        contact_id: contact.id
+                    });
+                    }
+                    
+                    logger.debug(`ID ${jobId}: 실시간 저장 완료`);
+                    return { success: true, data: { jobId } };
                 } catch (pageError) {
                     await page.close();
                     logger.error(`ID ${jobId}: 페이지 처리 중 오류: ${pageError.message}`);
-                    
-                    return {
-                    success: false,
-                    data: {
-                        jobId,
-                        error: pageError.message
-                    }
-                    };
+                    return { success: false, error: pageError.message };
                 }
                 } catch (error) {
                 logger.error(`ID ${jobId}: 처리 중 오류: ${error.message}`);
-                return { success: false, error: error.message, jobId };
+                return { success: false, error: error.message };
                 } finally {
-                // 처리 완료 후 진행 상태 업데이트
+                // 진행 상태 업데이트
                 completedCount++;
                 const percent = Math.round((completedCount / jobsToProcess.length) * 100);
                 
@@ -599,9 +578,9 @@ export const batchProcessJobIds = async (req, res) => {
           
           // 결과 및 오류 분류
           batchResults.forEach(result => {
-            if (result.success) {
+            if (result && result.success) {
               results.push(result.data);
-            } else {
+            } else if (result) {
               errors.push(result);
             }
           });
@@ -622,7 +601,8 @@ export const batchProcessJobIds = async (req, res) => {
       
       // Sequelize 트랜잭션 생성
       const t = await sequelize.transaction();
-      
+      let customersWithoutContacts = [];
+
       try {
         // 저장된 고객 정보 ID 추적
         const savedCustomerIds = [];
@@ -635,7 +615,8 @@ export const batchProcessJobIds = async (req, res) => {
               {
                 title: item.customer.title,
                 company_name: item.customer.company_name,
-                address: item.customer.address
+                address: item.customer.address,
+                source_filter: item.customer.source_filter
               },
               {
                 where: { id: item.customer.id },
@@ -643,32 +624,37 @@ export const batchProcessJobIds = async (req, res) => {
               }
             );
             
-            // 연락처 정보 업데이트 또는 생성
-            const existingContact = await ContactInfo.findOne({
-              where: { customer_id: item.customer.id },
+            let contact = await ContactInfo.findOne({
+              where: {
+                phone_number: item.contact.phone_number,
+                contact_person: item.contact.contact_person
+              },
               transaction: t
             });
             
-            if (existingContact) {
-              await ContactInfo.update(
+            if (!contact) {
+              contact = await ContactInfo.create(
                 {
-                  phone_number: item.contact.phone_number,
-                  contact_person: item.contact.contact_person
-                },
-                {
-                  where: { customer_id: item.customer.id },
-                  transaction: t
-                }
-              );
-            } else {
-              await ContactInfo.create(
-                {
-                  customer_id: item.customer.id,
                   phone_number: item.contact.phone_number,
                   contact_person: item.contact.contact_person
                 },
                 { transaction: t }
               );
+            }
+            
+            const exists = await sequelize.models.CustomerContactMap.findOne({
+              where: {
+                customer_id: item.customer.id,
+                contact_id: contact.id
+              },
+              transaction: t
+            });
+            
+            if (!exists) {
+              await sequelize.models.CustomerContactMap.create({
+                customer_id: item.customer.id,
+                contact_id: contact.id
+              }, { transaction: t });
             }
             
             savedCustomerIds.push(item.customer.id);
@@ -680,20 +666,44 @@ export const batchProcessJobIds = async (req, res) => {
                 posting_id: item.customer.posting_id,
                 title: item.customer.title,
                 company_name: item.customer.company_name,
-                address: item.customer.address
+                address: item.customer.address,
+                source_filter: item.customer.source_filter
               },
               { transaction: t }
             );
             
-            // 연락처 정보 생성
-            await ContactInfo.create(
-              {
-                customer_id: newCustomer.id,
+            let contact = await ContactInfo.findOne({
+              where: {
                 phone_number: item.contact.phone_number,
                 contact_person: item.contact.contact_person
               },
-              { transaction: t }
-            );
+              transaction: t
+            });
+            
+            if (!contact) {
+              contact = await ContactInfo.create(
+                {
+                  phone_number: item.contact.phone_number,
+                  contact_person: item.contact.contact_person
+                },
+                { transaction: t }
+              );
+            }
+            
+            const exists = await sequelize.models.CustomerContactMap.findOne({
+              where: {
+                customer_id: newCustomer.id,
+                contact_id: contact.id
+              },
+              transaction: t
+            });
+            
+            if (!exists) {
+              await sequelize.models.CustomerContactMap.create({
+                customer_id: newCustomer.id,
+                contact_id: contact.id
+              }, { transaction: t });
+            }
             
             savedCustomerIds.push(newCustomer.id);
           }
@@ -702,15 +712,8 @@ export const batchProcessJobIds = async (req, res) => {
         // 연락처가 없는 고객 데이터 정리 작업 추가
         logger.debug('연락처가 없는 고객 데이터 정리 작업 시작');
         
-        // 연락처가 없는 고객 정보 찾기
         const customersWithoutContacts = await CustomerInfo.findAll({
-          include: [{
-            model: ContactInfo,
-            required: false
-          }],
-          where: {
-            '$ContactInfos.id$': null
-          },
+          where: sequelize.literal('NOT EXISTS (SELECT 1 FROM customer_contact_map WHERE customer_contact_map.customer_id = CustomerInfo.id)'),
           transaction: t
         });
         
@@ -838,7 +841,9 @@ export const batchProcessJobIds = async (req, res) => {
         offset,
         include: [{
           model: ContactInfo,
-          required: false
+          required: false,
+          through: { attributes: [] },
+          attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
         }],
         distinct: true,
         order: order
@@ -854,10 +859,14 @@ export const batchProcessJobIds = async (req, res) => {
           company_name: plainCustomer.company_name,
           address: plainCustomer.address || '',
           naverplace_url: plainCustomer.naverplace_url || null,
+          source_filter: plainCustomer.source_filter || '',
           contacts: plainCustomer.ContactInfos ? plainCustomer.ContactInfos.map(contact => ({
             id: contact.id,
             phone_number: contact.phone_number || '',
-            contact_person: contact.contact_person || ''
+            contact_person: contact.contact_person || '',
+            favorite: contact.favorite,
+            blacklist: contact.blacklist,
+            friend_add_status: contact.friend_add_status
           })) : []
         };
       });
@@ -880,4 +889,3 @@ export const batchProcessJobIds = async (req, res) => {
     }
   };
 
-  

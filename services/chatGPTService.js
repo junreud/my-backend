@@ -118,9 +118,8 @@ ${JSON.stringify(placeInfo, null, 2)}
     const answer = response.choices?.[0]?.message?.content?.trim() || '';
     logger.info('ChatGPT Answer:', answer);
     // (C) 정규식으로 ```json ... ``` 추출
-    const jsonExtractRegex = /```json([\s\S]*?)```/;
+    const jsonExtractRegex = /```(?:json)?\s*([\s\S]*?)```/;
     const jsonMatch = answer.match(jsonExtractRegex);
-
     console.log('JSON Match:', jsonMatch); // Fixed: Log the match result, not the regex
     
     let parsed;
@@ -161,9 +160,14 @@ ${JSON.stringify(placeInfo, null, 2)}
         parsed = { locationKeywords: [], featureKeywords: [] };
       }
     }
-    // (D) 추출된 배열
-    let locationKeywords = parsed.locationKeywords || [];
+    // (D) 추출된 배열: ensure locationKeywords is always an array
+    const rawLoc = parsed.locationKeywords || [];
+    let locationKeywords = Array.isArray(rawLoc) ? rawLoc : Object.values(rawLoc);
     let featureKeywords = parsed.featureKeywords || [];
+    
+    // 필터: 문자열이 아닌 항목 제거
+    locationKeywords = locationKeywords.filter(kw => typeof kw === 'string');
+    featureKeywords = featureKeywords.filter(kw => typeof kw === 'string');
 
     // 주소에서 행정 경계 추출하여 locationKeywords에 추가
     if (placeInfo.address) {

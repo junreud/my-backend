@@ -1,5 +1,5 @@
 // services/normalizePlaceUrl.js
-import puppeteer from 'puppeteer';
+import { chromium } from 'playwright';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('NormalizePlaceUrl', { service: 'data-utils' });
@@ -10,8 +10,9 @@ const logger = createLogger('NormalizePlaceUrl', { service: 'data-utils' });
 async function resolveShortUrl(url) {
   let browser;
   try {
-    browser = await puppeteer.launch({ headless: 'new' });
-    const page = await browser.newPage();
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
     await page.goto(url, { waitUntil: 'networkidle2' });
     return page.url();
   } catch (err) {
@@ -31,14 +32,10 @@ async function resolveShortUrl(url) {
  * @returns {Promise<string>} 최종 URL
  */
 async function getUrlFromAnchor(normalizedUrl) {
-  const browser = await puppeteer.launch({ headless: 'new' });
+  const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage();
-
-    // 모바일 User-Agent 설정 (중요)
-    await page.setUserAgent(
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 15_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
-    );
+    const context = await browser.newContext({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1' });
+    const page = await context.newPage();
 
     // 정규화된 URL로 접속
     await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded' });

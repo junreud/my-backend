@@ -19,24 +19,18 @@ export async function crawlAndUpdatePlace(row) {
     throw new Error('유효하지 않은 row 객체: place_id가 없거나 올바르지 않습니다.');
   }
 
+  // 14:00 기준 사이클 계산
+  const now = new Date();
+  const today14h = new Date(now);
+  today14h.setHours(14, 0, 0, 0);
+  const cycleStart = now >= today14h ? today14h : new Date(today14h.getTime() - 24 * 60 * 60 * 1000);
+
   try {
-    // 3) 오늘의 레코드 찾거나 새로 생성 (14:00 규칙 적용)
-    const now = new Date();
-    const today14h = new Date(now);
-    today14h.setHours(14, 0, 0, 0);
-    
-    // 날짜 범위 결정 (오늘 14:00 전/후에 따라)
-    const startDate = now < today14h ? 
-      new Date(today14h.getTime() - 24 * 60 * 60 * 1000) : // 어제 14:00
-      today14h; // 오늘 14:00
-    
-    // 오늘(또는 현재 날짜 범위) 내의 레코드 찾기
+    // 오늘의 레코드 찾기 (cycleStart 기준)
     const todayRecord = await PlaceDetailResult.findOne({
       where: {
         place_id: row.place_id,
-        created_at: {
-          [Op.gte]: startDate
-        }
+        created_at: { [Op.gte]: cycleStart }
       },
       order: [['id', 'DESC']]
     });
@@ -46,7 +40,7 @@ export async function crawlAndUpdatePlace(row) {
         todayRecord.blog_review_count !== null && 
         todayRecord.receipt_review_count !== null && 
         todayRecord.keywordList !== null) {
-      logger.info(`[INFO] placeId=${placeId} 이미 14:00 규칙 하에 크롤링 완료됨, 스킵합니다.`);
+      logger.info(`[INFO] placeId=${placeId} 이미 cycle 시작(${cycleStart.toISOString()}) 이후 크롤링 완료됨, 스킵합니다.`);
       return { detailInfo: {
         blogReviewCount: todayRecord.blog_review_count,
         visitorReviewCount: todayRecord.receipt_review_count,
@@ -78,7 +72,7 @@ export async function crawlAndUpdatePlace(row) {
       });
       logger.info(`[INFO] placeId=${placeId} 기존 레코드 업데이트 완료 (id=${todayRecord.id})`);
     } else {
-      // 오늘의 레코드가 없으면 생성
+      // 오늘의 레코드가 없으면 create
       await PlaceDetailResult.create({
         place_id: row.place_id,
         place_name: row.place_name || '알 수 없음',
@@ -90,7 +84,7 @@ export async function crawlAndUpdatePlace(row) {
         last_crawled_at: new Date(),
         savedCount: row.savedCount // 기존 savedCount 값 유지
       });
-      logger.info(`[INFO] placeId=${placeId} 새 레코드 생성 완료`);
+      logger.info(`[INFO] placeId=${placeId} 새 레코드 생성 완료 (cycleStart=${cycleStart.toISOString()})`);
     }
 
     logger.info(`[INFO] placeId=${placeId} 상세크롤 완료`);
@@ -110,29 +104,28 @@ export async function crawlDetail({ placeId }) {
     throw new Error('placeId는 필수 파라미터입니다.');
   }
 
-  // 14:00 규칙 적용을 위한 날짜 계산
+  // 14:00 기준 사이클 계산
   const now = new Date();
   const today14h = new Date(now);
   today14h.setHours(14, 0, 0, 0);
-  
-  // 날짜 범위 결정 (오늘 14:00 전/후에 따라)
-  const startDate = now < today14h ? 
-    new Date(today14h.getTime() - 24 * 60 * 60 * 1000) : // 어제 14:00
-    today14h; // 오늘 14:00
-  
-  // 1) 현재 사이클의 레코드만 'processing' 상태로 업데이트
+  const cycleStart = now >= today14h ? today14h : new Date(today14h.getTime() - 24 * 60 * 60 * 1000);
+
+  // processing 상태 업데이트 (cycleStart 기준)
   await PlaceDetailResult.update(
     { crawl_status: 'processing' },
-    { 
-      where: { 
+    {
+      where: {
         place_id: placeId,
-        created_at: { [Op.gte]: startDate } // 14:00 규칙 적용
-      } 
+        created_at: { [Op.gte]: cycleStart }
+      }
     }
   );
 
   // 2) DB에서 row 정보 가져오기
-  const placeInfo = await PlaceDetailResult.findOne({ where: { place_id: placeId } });
+  const placeInfo = await PlaceDetailResult.findOne({ 
+    where: { place_id: placeId, created_at: { [Op.gte]: cycleStart } },
+    order: [['created_at', 'DESC']]
+  });
   const row = {
     place_id: placeId,
     place_name: placeInfo?.place_name || '알 수 없음',
@@ -152,11 +145,11 @@ export async function crawlDetail({ placeId }) {
         last_error: null,
         ...(wasSkipped ? {} : { last_crawled_at: new Date() })
       },
-      { 
-        where: { 
+      {
+        where: {
           place_id: placeId,
-          created_at: { [Op.gte]: startDate } // 14:00 규칙 적용
-        } 
+          created_at: { [Op.gte]: cycleStart }
+        }
       }
     );
     
@@ -174,11 +167,11 @@ export async function crawlDetail({ placeId }) {
         crawl_status: 'failed',
         last_error: err.message
       },
-      { 
-        where: { 
+      {
+        where: {
           place_id: placeId,
-          created_at: { [Op.gte]: startDate } // 14:00 규칙 적용
-        } 
+          created_at: { [Op.gte]: cycleStart }
+        }
       }
     );
     
