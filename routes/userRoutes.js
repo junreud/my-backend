@@ -258,10 +258,12 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
       where: { id: { [Op.in]: keywordIds } }
     });
     
-    // 키워드 ID -> 키워드 문자열 매핑 생성
+    // 키워드 ID -> 키워드 문자열 및 isRestaurant 플래그 매핑 생성
     const keywordMap = {};
+    const isRestaurantMap = {};
     keywords.forEach(k => {
       keywordMap[k.id] = k.keyword;
+      isRestaurantMap[k.id] = k.isRestaurant || false; // isRestaurant 플래그 저장
     });
 
     // keyword 파라미터가 있으면 해당 키워드만 필터링
@@ -425,6 +427,7 @@ router.get("/keyword-ranking-details", authenticateJWT, async (req, res) => {
             place_id: parseInt(pid),
             place_name: b.place_name,
             category: b.category,
+            isRestaurant: isRestaurantMap[keywordId] || false, // Include the isRestaurant flag
             // savedCount comes only from detail results
             savedCount: d?.savedCount ?? null,
             blog_review_count: d ? d.blog_review_count : null,

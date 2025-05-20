@@ -18,8 +18,8 @@ import {
 } from "../config/crawler.js";
 
 // Add imports for models
-import Keyword from '../../models/Keyword.js';
-import SameResultKeyword from '../../models/SameResultKeyword.js';
+import Keyword from '../models/Keyword.js';
+import SameResultKeyword from '../models/SameResultKeyword.js';
 
 /**
  * (A) Puppeteer: 네이버에서 키워드 검색 → 상위 20개 업체명 추출

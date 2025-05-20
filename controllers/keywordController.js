@@ -593,23 +593,27 @@ export async function saveGroupedKeywordsHandler(req, res) {
 
 /**
  * 7) 선택된 키워드 저장
- *    POST /analysis/save-selected
- *    body: { user_id, place_id, place_name, category, finalKeywords: string[] }
+ *    POST /keyword/save-selected
+ *    body: { placeId: number, keywords: string[] }
+ *    Authentication: JWT (req.user)
  */
 export async function saveSelectedKeywordsHandler(req, res) {
   try {
-    logger.info('[INFO] 요청 데이터:', req.body);
-    const { user_id, place_id, finalKeywords } = req.body;
+    const user_id = req.user.id;
+    logger.info('[INFO] 요청 데이터:', { user_id, ...req.body });
+    const { placeId, keywords } = req.body;
+    const place_id = placeId;
+
     // Fetch existing Place record
     const placeRecord = await Place.findOne({ where: { user_id, place_id } });
     if (!placeRecord) {
       return res.status(400).json({ success: false, message: '먼저 장소를 저장해주세요.' });
     }
 
-    if (!finalKeywords || !Array.isArray(finalKeywords)) {
+    if (!keywords || !Array.isArray(keywords)) {
       return res.status(400).json({ 
         success: false, 
-        message: 'finalKeywords 배열이 필요합니다' 
+        message: 'keywords 배열이 필요합니다' 
       });
     }
 
@@ -619,7 +623,7 @@ export async function saveSelectedKeywordsHandler(req, res) {
     const createdIds = [];
     const groupedKeywords = [];
 
-    for (const keywordObj of finalKeywords) {
+    for (const keywordObj of keywords) {
       let keywordText;
       let isGrouped = false;
       let groupKeywords = [];
@@ -676,6 +680,13 @@ export async function saveSelectedKeywordsHandler(req, res) {
       }
 
       // (D) UserPlaceKeyword 테이블 연동
+      // Verify active business exists in basic crawl results
+      const items = await crawlKeywordBasic(keywordText, keywordRecord.id);
+      const placeIds = items.map(i => parseInt(i.placeId, 10));
+      if (!placeIds.includes(place_id)) {
+        logger.warn(`[WARN] 사용자 ${user_id} 업체 ${place_id} 에서 키워드 "${keywordText}" 검색 결과에 없음. 연결 취소.`);
+        continue; // skip linking this keyword
+      }
       await UserPlaceKeyword.findOrCreate({
         where: { user_id, place_id, keyword_id: keywordRecord.id },
         defaults: { user_id, place_id, keyword_id: keywordRecord.id }
@@ -993,9 +1004,10 @@ export const changeUserKeywordHandler = async (req, res) => {
         
         // 키워드 크롤링 실행 - 결과가 있는지 확인
         const items = await crawlKeywordBasic(trimmedKeyword, newKeywordRecord.id);
-        
+        // Ensure the user's place_id appears in crawl results
+        const hasActivePlace = items && items.some(i => String(i.placeId) === String(placeId));
         // 결과가 없으면 "조건에 맞는 업체가 없음" 상태
-        if (!items || items.length === 0) {
+        if (!items || items.length === 0 || !hasActivePlace) {
           logger.warn(`[WARN] 키워드 "${trimmedKeyword}": 조건에 맞는 업체가 없습니다. 키워드 변경 취소.`);
           
           // 새로 생성된 키워드 레코드 삭제 (관련 데이터 정리)

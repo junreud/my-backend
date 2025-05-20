@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "NODE_ENV=production node server.js",
-    "dev": "cross-env NODE_ENV=development node server.js"
+    "dev": "cross-env NODE_ENV=development node server.js",
+    "migrate": "npx sequelize-cli db:migrate",
+    "migrate:undo": "npx sequelize-cli db:migrate:undo"
   },
   "repository": {
     "type": "git",
@@ -35,6 +37,7 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "multer": "^2.0.0",
     "mysql2": "^3.12.0",
     "node-cron": "^3.0.3",
     "openai": "^4.85.4",

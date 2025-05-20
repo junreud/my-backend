@@ -1,4 +1,5 @@
 import Place from '../models/Place.js';
+import PlaceDetailResult from '../models/PlaceDetailResult.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('PlaceController');
@@ -14,19 +15,37 @@ export const getUserPlaces = async (req, res) => {
       return res.status(400).json({ error: 'User ID is required' });
     }
     
-    // Place 테이블에서 직접 user_id로 필터링하여 조회
+    // Place 테이블에서 user_id로 조회
     const places = await Place.findAll({
       where: { user_id: userId },
       attributes: ['id', 'place_id', 'place_name', 'category', 'isNewlyOpened']
     });
     
-    // Add default platform value for frontend compatibility
-    const formattedPlaces = places.map(place => ({
-      ...place.toJSON(),
-      platform: 'naver' // Default platform
+    // 각 place에 대해 place_detail_results에서 최신 리뷰 카운트 조회
+    const formattedPlaces = await Promise.all(places.map(async place => {
+      const placeData = place.toJSON();
+      let blog_review_count = null;
+      let receipt_review_count = null;
+      try {
+        const latestDetail = await PlaceDetailResult.findOne({
+          where: { place_id: placeData.place_id },
+          order: [['last_crawled_at', 'DESC']]
+        });
+        if (latestDetail) {
+          blog_review_count = latestDetail.blog_review_count ?? null;
+          receipt_review_count = latestDetail.receipt_review_count ?? null;
+        }
+      } catch (err) {
+        logger.error('Error fetching review counts from PlaceDetailResult:', err);
+      }
+      return {
+        ...placeData,
+        blog_review_count,
+        receipt_review_count,
+        platform: 'naver',
+      };
     }));
     
-    // Frontend expects array of places directly
     return res.status(200).json(formattedPlaces);
   } catch (error) {
     console.error('Error fetching user places:', error);

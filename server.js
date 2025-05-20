@@ -1,6 +1,7 @@
 import fs from "fs";
 import https from "https";
 import express from "express";
+import path from "path";
 import cors from "cors";
 import sequelize from "./config/db.js";
 import passport from "./middlewares/passport.js";
@@ -17,6 +18,7 @@ import adminRoutes from "./routes/adminRoutes.js";
 import kakaoRoutes from "./routes/kakaoRoutes.js";
 import templateRoutes from './routes/templateRoutes.js';
 import { getDailySummary } from './controllers/statsController.js';
+import bugReportRoutes from './routes/bugReportRoutes.js';
 
 // Load queue worker to register processing handlers and schedules
 import "./services/crawler/keywordQueue.js";
@@ -68,7 +70,8 @@ import "./services/crawler/keywordQueue.js";
   app.use(passport.initialize());
 
   // 정적 파일 제공 설정 추가
-  
+  app.use('/uploads/bug_screenshots', express.static(path.join(process.cwd(), 'uploads/bug_screenshots')));
+
   app.use("/auth", authRoutes);
   app.use("/keyword", keywordRoutes);
 
@@ -79,7 +82,9 @@ import "./services/crawler/keywordQueue.js";
   app.use("/api/place", placeRoutes);
   app.use("/api/admin", adminRoutes);
   app.use("/api/customer", albamonRoutes);
-  app.use("/api/kakao", kakaoRoutes);
+  // 버그 리포트 API 및 업로드된 스크린샷 제공
+  app.use('/api/bug-report', bugReportRoutes);
+  app.use('/bug-report', bugReportRoutes);
 
   // 통계 API: 오늘의 사용자 및 신규 클라이언트 집계
   app.get(
@@ -95,15 +100,9 @@ console.log("DB sync OK");
 
   const PORT = process.env.PORT || 4000;
 
-  if (process.env.NODE_ENV === 'development') {
-    server.listen(PORT, () => {
-      console.log(`Development server running on https://localhost:${PORT}`);
-    });
-  } else {
-    app.listen(PORT, () => {
-      console.log(`Production server running on port ${PORT}`);
-      console.log(`Available via Cloudflare Tunnel at https://api.lakabe.com`);
-    });
-  }
+  // Start HTTPS server
+  server.listen(PORT, () => {
+    console.log(`${process.env.NODE_ENV || 'server'} HTTPS server running on https://localhost:${PORT}`);
+  });
 
   export { io };

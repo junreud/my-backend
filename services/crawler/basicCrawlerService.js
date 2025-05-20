@@ -365,21 +365,45 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
       await page.goto(savedUrl, { waitUntil: 'domcontentloaded' });
       try { await page.waitForSelector('canvas.mapboxgl-canvas', { timeout:15000, visible:true }); } catch {}
       await randomDelay(1,2);
+      
+      // 무한 스크롤 수행
       await performInfiniteScroll(page, listItemSelector);
+      
+      // 저장수 정보와 함께 장소 ID와 이름도 추출
       savedCounts = await page.evaluate((selector) => {
         const counts = {};
+        const places = {};
+        
         document.querySelectorAll(selector).forEach(item => {
           const aTag = item.querySelector('a');
           const m = aTag?.href.match(/\/(?:restaurant|place|cafe)\/(\d+)/);
           if (m?.[1]) {
+            const placeId = m[1];
             const text = item.textContent || '';
             const match = text.match(/(\d[\d,]*)\s*(?:저장|찜|즐겨찾기)/);
-            if (match?.[1]) counts[m[1]] = parseInt(match[1].replace(/,/g,''),10);
+            
+            // 저장수 정보 저장
+            if (match?.[1]) {
+              counts[placeId] = parseInt(match[1].replace(/,/g,''),10);
+            }
+            
+            // 장소 이름 추출 (맛집 셀렉터에 맞춤)
+            const nameEl = item.querySelector('span.TYaxT');
+            const catEl = item.querySelector('.KCMnt');
+            
+            if (nameEl) {
+              places[placeId] = {
+                place_name: nameEl.textContent.trim(),
+                category: catEl ? catEl.textContent.trim() : ''
+              };
+            }
           }
         });
-        return counts;
+        
+        return { counts, places };
       }, listItemSelector);
-      logger.info(` 저장수 정보: ${Object.keys(savedCounts).length}개 항목`);
+      
+      logger.info(` 저장수 정보: ${Object.keys(savedCounts.counts).length}개 항목`);
     }
 
     // 결과가 없는 경우 (추가 조건)
@@ -485,14 +509,10 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
       logger.info(`[BasicCrawler] 키워드 "${keywordText}" 결과없음. basic_last_crawled_date 업데이트 안 함.`);
     }
 
-    // (C) Now update place_detail_results with savedCount under the 14:00 rule
-    logger.info(`[BasicCrawler] 키워드 "${keywordText}" - place_detail_results 테이블에 ${items.length}개 항목 초기화 시작`);
+    // (C) 이제 저장수 정보만 PlaceDetailResult 테이블에 저장
+    logger.info(`[BasicCrawler] 키워드 "${keywordText}" - place_detail_results 테이블에 저장수 정보 저장 시작`);
 
     try {
-      const placeIds = items
-        .map(item => parseInt(item.placeId, 10))
-        .filter(id => !isNaN(id));
-
       // 1) "14:00" 기준 사이클 계산
       const now = new Date();
       const today14h = new Date(now);
@@ -510,45 +530,179 @@ export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882,
       let updatedCount = 0;
       let errorCount = 0;
 
-      // placeIds를 순회하면서 개별 트랜잭션 처리
-      for (const pid of placeIds) {
-        const item = items.find(it => parseInt(it.placeId, 10) === pid);
-        if (!item) continue;
-        const countVal = isRestaurantVal === 1
-          ? (savedCounts[pid] ?? null)
-          : null;
-
-        try {
-          await sequelize.transaction(async (t) => {
-            // find existing record for today cycle
-            const existing = await PlaceDetailResult.findOne({
-              where: {
-                place_id: pid,
-                created_at: { [Op.gte]: cycleStart }
-              },
-              transaction: t
+      // 저장수 정보가 있을 경우에만 처리 (맛집 카테고리)
+      if (isRestaurantVal === 1 && savedCounts.counts && Object.keys(savedCounts.counts).length > 0) {
+        const savedPlaceIds = Object.keys(savedCounts.counts).map(id => parseInt(id, 10));
+        
+        logger.info(`[BasicCrawler] 키워드 "${keywordText}" - 저장수 정보 있는 장소 ${savedPlaceIds.length}개 처리 시작`);
+        
+        // 저장수 정보가 있는 모든 장소들을 처리
+        for (const pid of savedPlaceIds) {
+          const placeInfo = savedCounts.places[pid];
+          const savedCount = savedCounts.counts[pid];
+          
+          if (!savedCount) continue;
+          
+          try {
+            await sequelize.transaction(async (t) => {
+              // 기존 레코드 찾기
+              const existing = await PlaceDetailResult.findOne({
+                where: {
+                  place_id: pid,
+                  created_at: { [Op.gte]: cycleStart }
+                },
+                transaction: t
+              });
+              
+              if (existing) {
+                // 기존 레코드가 있으면 저장수만 업데이트
+                await existing.update(
+                  { savedCount },
+                  { transaction: t }
+                );
+                updatedCount++;
+              } else {
+                // 없으면 새로운 레코드 생성
+                await PlaceDetailResult.create({
+                  place_id: pid,
+                  place_name: placeInfo?.place_name || '알 수 없음',
+                  category: placeInfo?.category || '',
+                  is_restaurant: true,  // 저장많은순 페이지는 항상 맛집
+                  last_crawled_at: null,
+                  savedCount,
+                  crawl_status: 'pending'  // 상세 크롤링 대기 상태로 설정
+                }, { transaction: t });
+                insertedCount++;
+                
+                // 상세 정보를 위해 detail 크롤링 큐에 추가
+                if (keywordQueue && typeof keywordQueue.add === 'function') {
+                  await keywordQueue.add(
+                    'unifiedProcess',
+                    { type: 'detail', data: { placeId: pid } },
+                    { 
+                      priority: 6,  // 낮은 우선순위
+                      jobId: `saved_detail_${pid}_${Date.now()}`,
+                      removeOnComplete: true
+                    }
+                  );
+                }
+              }
             });
-            if (existing) {
-              await existing.update(
-                { savedCount: countVal },
-                { transaction: t }
-              );
-              updatedCount++;
-            } else {
-              await PlaceDetailResult.create(
-                { place_id: pid, last_crawled_at: null, savedCount: countVal },
-                { transaction: t }
-              );
-              insertedCount++;
+          } catch (err) {
+            errorCount++;
+            logger.error(`[ERROR] Failed to process place_id=${pid} for savedCount: ${err.message}`);
+          }
+        }
+      } else {
+        logger.info(`[BasicCrawler] 키워드 "${keywordText}"에 대해 저장수 정보가 없습니다 (맛집 아님 또는 저장 데이터 없음)`);
+      }
+
+      // 기본 크롤링에서 저장수가 없는 장소들 처리
+      if (isRestaurantVal === 1) {
+        const basicPlaceIds = items.map(item => parseInt(item.placeId, 10)).filter(id => !isNaN(id));
+        // 저장수 정보가 없는 장소들 필터링
+        const placeIdsWithoutSavedCount = basicPlaceIds.filter(pid => !savedCounts.counts || savedCounts.counts[pid] === undefined);
+        
+        if (placeIdsWithoutSavedCount.length > 0) {
+          logger.info(`[BasicCrawler] 키워드 "${keywordText}" - 저장수 정보 없는 장소 ${placeIdsWithoutSavedCount.length}개 처리 시작`);
+          
+          let preservedCount = 0;
+          
+          for (const pid of placeIdsWithoutSavedCount) {
+            const item = items.find(it => parseInt(it.placeId, 10) === pid);
+            if (!item) continue;
+            
+            try {
+              await sequelize.transaction(async (t) => {
+                // 현재 사이클에 이미 존재하는 레코드 확인
+                const existing = await PlaceDetailResult.findOne({
+                  where: {
+                    place_id: pid,
+                    created_at: { [Op.gte]: cycleStart }
+                  },
+                  transaction: t
+                });
+                
+                if (existing) {
+                  // 이미 레코드가 있고 저장수가 null이면 이전 사이클 데이터 확인
+                  if (existing.savedCount === null) {
+                    // 이전 사이클의 저장수 값이 있는지 확인
+                    const previousRecord = await PlaceDetailResult.findOne({
+                      where: {
+                        place_id: pid,
+                        created_at: { [Op.lt]: cycleStart },
+                        savedCount: { [Op.ne]: null }
+                      },
+                      order: [['created_at', 'DESC']],
+                      transaction: t
+                    });
+                    
+                    if (previousRecord && previousRecord.savedCount !== null) {
+                      // 이전 값이 있으면 복사
+                      await existing.update(
+                        { savedCount: previousRecord.savedCount },
+                        { transaction: t }
+                      );
+                      preservedCount++;
+                      logger.debug(`[INFO] place_id=${pid}: 이전 저장수 ${previousRecord.savedCount}을 현재 레코드에 복사함`);
+                    }
+                  }
+                  // 저장수 이외 정보 업데이트
+                } else {
+                  // 새 레코드 생성 전 이전 사이클 데이터 확인
+                  const previousRecord = await PlaceDetailResult.findOne({
+                    where: {
+                      place_id: pid,
+                      created_at: { [Op.lt]: cycleStart },
+                      savedCount: { [Op.ne]: null }
+                    },
+                    order: [['created_at', 'DESC']],
+                    transaction: t
+                  });
+                  
+                  // 새 레코드 생성
+                  await PlaceDetailResult.create({
+                    place_id: pid,
+                    place_name: item.name,
+                    category: item.category,
+                    is_restaurant: isRestaurantVal === 1,
+                    last_crawled_at: null,
+                    savedCount: previousRecord ? previousRecord.savedCount : null, // 이전 값 있으면 사용
+                    crawl_status: 'pending'
+                  }, { transaction: t });
+                  
+                  if (previousRecord && previousRecord.savedCount !== null) {
+                    preservedCount++;
+                    logger.debug(`[INFO] place_id=${pid}: 새 레코드 생성 시 이전 저장수 ${previousRecord.savedCount} 재사용`);
+                  }
+                  
+                  insertedCount++;
+                  
+                  // 상세 정보를 위해 detail 크롤링 큐에 추가
+                  if (keywordQueue && typeof keywordQueue.add === 'function') {
+                    await keywordQueue.add(
+                      'unifiedProcess',
+                      { type: 'detail', data: { placeId: pid } },
+                      { 
+                        priority: 6,
+                        jobId: `basic_detail_${pid}_${Date.now()}`,
+                        removeOnComplete: true
+                      }
+                    );
+                  }
+                }
+              });
+            } catch (err) {
+              errorCount++;
+              logger.error(`[ERROR] Failed to process place_id=${pid} with null savedCount: ${err.message}`);
             }
-          });
-        } catch (err) {
-          errorCount++;
-          logger.error(`[ERROR] Failed to process place_id=${pid}: ${err.message}`);
+          }
+          
+          logger.info(`[BasicCrawler] 저장수 없는 장소 처리 완료: 총 ${placeIdsWithoutSavedCount.length}개 중 ${preservedCount}개 이전 저장수 값 재사용`);
         }
       }
 
-      logger.info(`[PLACE_DETAIL] 처리 완료 - 키워드 "${keywordText}": 총 ${placeIds.length}개 중 신규 ${insertedCount}개, 업데이트 ${updatedCount}개, 오류 ${errorCount}개`);
+      logger.info(`[PLACE_DETAIL] 저장수 처리 완료 - 키워드 "${keywordText}": 저장 ${insertedCount}개, 업데이트 ${updatedCount}개, 오류 ${errorCount}개`);
       
       if (errorCount > 0) {
         logger.warn(`[WARN] place_detail_results 처리 중 ${errorCount}개 항목에서 오류 발생`);

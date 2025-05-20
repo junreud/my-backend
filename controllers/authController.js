@@ -15,7 +15,7 @@ const logger = createLogger('AuthController');
 // 토큰 생성 함수
 // ------------------------------------------------------------
 function createAccessToken(userId) {
-  // 15분 만료 예시
+  // 15분 만료 설정
   return jwt.sign({ userId }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '15m' });
 }
 
@@ -68,6 +68,13 @@ export async function refresh(req, res) {
 
     // Access Token 재발급
     const newAccessToken = createAccessToken(user.id);
+    // (3) 새로운 AccessToken -> HttpOnly 쿠키 (for SSR/발급 후 갱신)
+    res.cookie('token', newAccessToken, {
+      httpOnly: true,
+      secure: getSecureCookieSetting(),
+      sameSite: 'none',
+      path: '/',
+    });
     return res.json({ accessToken: newAccessToken });
   } catch (err) {
     console.error(err);
@@ -131,6 +138,7 @@ export async function addInfo(req, res) {
       httpOnly: true,
       secure: getSecureCookieSetting(),
       sameSite: "none",
+      path: '/',
     });
 
     // 환경에 따라 다른 리다이렉트 URL 사용
@@ -288,8 +296,9 @@ export async function linkAccounts(req, res) {
     // set-cookie refresh
     res.cookie("refreshToken", tokens.refreshToken, {
       httpOnly: true,
-      sameSite: "none",
       secure: getSecureCookieSetting(),
+      sameSite: "none",
+      path: '/',
     });
     // json 응답으로 accessToken
     return res.json({ message: "연동+로그인 완료", accessToken: tokens.accessToken });
@@ -318,6 +327,7 @@ export async function logout(req, res) {
       httpOnly: true,
       secure: getSecureCookieSetting(),
       sameSite: 'none',
+      path: '/',
     });
     return res.json({ message: '로그아웃 성공' });
   } catch (err) {

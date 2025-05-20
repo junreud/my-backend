@@ -18,10 +18,14 @@ console.log(`[PASSPORT] Google Callback URL: ${process.env.GOOGLE_CALLBACK_URL |
 passport.use(
   new JwtStrategy(
     {
-      // request의 Header "Authorization: Bearer <token>"에서 토큰 추출
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      // Authorization 헤더 또는 token 쿠키에서 토큰 추출
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        (req) => req && req.cookies ? req.cookies.token : null
+      ]),
       secretOrKey: process.env.ACCESS_TOKEN_SECRET, // .env에 저장된 키
     },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async (payload, done) => {
       try {
         // payload = { userId: XXX, iat: ..., exp: ... }

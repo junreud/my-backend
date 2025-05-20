@@ -9,7 +9,8 @@ import 'dotenv/config';
 
 const logger = createLogger('AuthRoutes');
 const isDevelopment = () => process.env.NODE_ENV === 'development';
-const getSecureCookieSetting = () => !isDevelopment();
+// Always secure cookies for sameSite='none' cross-site scenarios (dev and prod)
+const getSecureCookieSetting = () => true;
 
 // 환경에 따른 프론트엔드 URL 설정
 const getFrontendUrl = () => {
@@ -36,14 +37,16 @@ router.post('/login', (req, res, next) => {
       // (1) RefreshToken -> HttpOnly 쿠키
       res.cookie('refreshToken', tokens.refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV !== 'development',
+        secure: getSecureCookieSetting(),
         sameSite: 'none',
+        path: '/',
       });
       // (2) AccessToken -> HttpOnly 쿠키 (for SSR token retrieval)
       res.cookie('token', tokens.accessToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV !== 'development',
+        secure: getSecureCookieSetting(),
         sameSite: 'none',
+        path: '/',
       });
       // (3) 로그인 성공 응답
       return res.json({ message: '로그인 성공!' });
@@ -99,8 +102,9 @@ router.get('/google/callback', (req, res, next) => {
         // (2) refreshToken을 쿠키로
         res.cookie('refreshToken', tokens.refreshToken, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === 'development',
+          secure: getSecureCookieSetting(),
           sameSite: 'none',
+          path: '/',
         });
         
         // (3) accessToken은 쿼리파람으로 넘겨주고, 프론트에서 localStorage에 저장 가능
@@ -164,6 +168,7 @@ router.get("/kakao/callback", (req, res, next) => {
           httpOnly: true,
           secure: getSecureCookieSetting(),
           sameSite: "none",
+          path: '/',
         });
         const frontendUrl = getFrontendUrl();
         return res.redirect(
