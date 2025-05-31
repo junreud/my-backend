@@ -1,13 +1,23 @@
 // routes/authRoutes.js
-
 import express from 'express';
 import passport from 'passport';
-import authController from '../controllers/authController.js'; // default import
-import { issueTokens } from '../controllers/authController.js';
-import { createLogger } from '../lib/logger.js';
-import 'dotenv/config';
+import { body, validationResult } from 'express-validator';
 
-const logger = createLogger('AuthRoutes');
+// Controllers & Services
+import authController, { issueTokens } from '../controllers/authController.js';
+
+// Utils & Middleware
+import createLogger from '../lib/logger.js';
+import { authenticateJWT, asyncHandler } from '../middlewares/auth.js';
+import { sendSuccess, sendError } from '../lib/response.js';
+const router = express.Router();
+const logger = createLogger('authRoutes');
+
+// 공통 요청 로깅
+router.use((req, res, next) => { logger.debug(`AuthRoutes 요청: ${req.method} ${req.originalUrl}`); next(); });
+// OAuth 라우트 설정 로그
+logger.debug('OAuth 라우트 설정 완료');
+
 const isDevelopment = () => process.env.NODE_ENV === 'development';
 // Always secure cookies for sameSite='none' cross-site scenarios (dev and prod)
 const getSecureCookieSetting = () => true;
@@ -19,58 +29,62 @@ const getFrontendUrl = () => {
     : process.env.FRONTEND_URL || 'https://lakabe.com';
 };
 
-const router = express.Router();
+router.post(
+  '/login',
+  body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
+  body('password').notEmpty().withMessage('비밀번호가 필요합니다.'),
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    logger.debug('/login 요청 수신');
+    passport.authenticate('local', { session: false }, async (err, user, info) => {
+      if (err) return next(err);
+      if (!user) {
+        return sendError(res, 401, info?.message || 'Auth Failed');
+      }
 
-router.post('/login', (req, res, next) => {
-  console.log('[AUTH] /login 요청 수신');
-  passport.authenticate('local', { session: false }, async (err, user, info) => {
-    if (err) return next(err);
-    if (!user) {
-      // 인증 실패
-      return res.status(401).json({ message: info?.message || 'Auth Failed' });
-    }
+      try {
+        // 토큰 발급
+        const tokens = await issueTokens(user.id);
 
-    try {
-      // 토큰 발급
-      const tokens = await issueTokens(user.id);
-
-      // (1) RefreshToken -> HttpOnly 쿠키
-      res.cookie('refreshToken', tokens.refreshToken, {
-        httpOnly: true,
-        secure: getSecureCookieSetting(),
-        sameSite: 'none',
-        path: '/',
-      });
-      // (2) AccessToken -> HttpOnly 쿠키 (for SSR token retrieval)
-      res.cookie('token', tokens.accessToken, {
-        httpOnly: true,
-        secure: getSecureCookieSetting(),
-        sameSite: 'none',
-        path: '/',
-      });
-      // (3) 로그인 성공 응답
-      return res.json({ message: '로그인 성공!' });
-    } catch (error) {
-      console.error('[ERROR] issueTokens:', error);
-      return res.status(500).json({ message: '토큰 발급 실패' });
-    }
-  })(req, res, next);
-});
+        // (1) RefreshToken -> HttpOnly 쿠키
+        res.cookie('refreshToken', tokens.refreshToken, {
+          httpOnly: true,
+          secure: getSecureCookieSetting(),
+          sameSite: 'none',
+          path: '/',
+        });
+        // (2) AccessToken -> HttpOnly 쿠키 (for SSR token retrieval)
+        res.cookie('token', tokens.accessToken, {
+          httpOnly: true,
+          secure: getSecureCookieSetting(),
+          sameSite: 'none',
+          path: '/',
+        });
+        // (3) 로그인 성공 응답
+        return sendSuccess(res, {}, '로그인 성공!');
+      } catch (error) {
+        logger.error('issueTokens 오류:', error);
+        return sendError(res, 500, '토큰 발급 실패');
+      }
+    })(req, res, next);
+  })
+);
 
 // ----- 구글 OAuth -----
-console.log('[AUTH_ROUTES] Google OAuth 라우트 설정');
-router.get('/google', (req, res, next) => {
-  console.log('[AUTH] Google OAuth 인증 요청 시작');
-  passport.authenticate('google', { 
-    scope: ['email', 'profile'] 
-  })(req, res, next);
-});
+router.get(
+  '/google',
+  (req, res, next) => {
+    logger.debug('Google OAuth 인증 요청 시작');
+    passport.authenticate('google', { scope: ['email', 'profile'] })(req, res, next);
+  }
+);
 
 router.get('/google/callback', (req, res, next) => {
-  console.log('[AUTH] Google OAuth 콜백 요청 수신');
+  logger.debug('Google OAuth 콜백 요청 수신');
   passport.authenticate('google', { session: false }, async (err, user, info) => {
     if (err) {
-      console.error('[AUTH] Google 콜백 에러:', err);
+      logger.error('Google OAuth 콜백 에러:', err);
       return next(err);
     }
 
@@ -84,7 +98,7 @@ router.get('/google/callback', (req, res, next) => {
           `${frontendUrl}/link-accounts?email=${encodeURIComponent(email)}&googleSub=${encodeURIComponent(googleId)}&provider=google`
         );
       } else {
-        return res.status(400).json({ message: info?.message || '구글 로그인 실패' });
+        return sendError(res, 400, info?.message || '구글 로그인 실패');
       }
     }
 
@@ -113,7 +127,7 @@ router.get('/google/callback', (req, res, next) => {
           `${frontendUrl}/oauth-redirect?accessToken=${tokens.accessToken}`
         );
       } catch (error) {
-        console.error('[ERROR] issueTokens:', error);
+        logger.error('Google OAuth issueTokens 오류:', error);
         const frontendUrl = getFrontendUrl();
         return res.redirect(`${frontendUrl}/login?error=token_issue`);
       }
@@ -122,14 +136,16 @@ router.get('/google/callback', (req, res, next) => {
 });
 
 // ----- 카카오 OAuth -----
-console.log('[AUTH_ROUTES] Kakao OAuth 라우트 설정');
-router.get('/kakao', (req, res, next) => {
-  console.log('[AUTH] Kakao OAuth 인증 요청 시작');
-  passport.authenticate('kakao')(req, res, next);
-});
+router.get(
+  '/kakao',
+  (req, res, next) => {
+    logger.debug('Kakao OAuth 인증 요청 시작');
+    passport.authenticate('kakao')(req, res, next);
+  }
+);
 
 router.get("/kakao/callback", (req, res, next) => {
-  console.log('[AUTH] Kakao OAuth 콜백 요청 수신');
+  logger.debug('Kakao OAuth 콜백 요청 수신');
   passport.authenticate("kakao", { session: false }, async (err, user, info) => {
     if (err) return next(err);
 
@@ -144,14 +160,10 @@ router.get("/kakao/callback", (req, res, next) => {
       } 
       // message: EMAIL_IN_USE_SOCIAL => 소셜 vs 소셜
       else if (info && info.message === "EMAIL_IN_USE_SOCIAL") {
-        return res
-          .status(400)
-          .json({ message: "이미 소셜로 가입된 이메일 - 가입 불가" });
+        return sendError(res, 400, '이미 소셜로 가입된 이메일 - 가입 불가');
       } 
       else {
-        return res.status(400).json({
-          message: info?.message || "카카오 로그인 실패",
-        });
+        return sendError(res, 400, info?.message || '카카오 로그인 실패');
       }
     }
 
@@ -175,7 +187,7 @@ router.get("/kakao/callback", (req, res, next) => {
           `${frontendUrl}/oauth-redirect?accessToken=${tokens.accessToken}`
         );
       } catch (error) {
-        console.error("[ERROR] issueTokens:", error);
+        logger.error('Kakao OAuth issueTokens 오류:', error);
         const frontendUrl = getFrontendUrl();
         return res.redirect(`${frontendUrl}/login?error=token_issue`);
       }
@@ -184,14 +196,50 @@ router.get("/kakao/callback", (req, res, next) => {
 });
 
 // 기타 라우트들
-router.post('/signup', authController.signup);
-router.post('/verify', authController.verify);
-router.post('/check-email', authController.checkEmail);
-router.post('/checkEmailAndPassword', authController.checkEmailAndPassword);
-router.post("/link-accounts", authController.linkAccounts);
-router.post('/addinfo', authController.addInfo);
-router.post('/refresh', authController.refresh);
-// 로그아웃 라우트
-router.post('/logout', authController.logout);
+router.post(
+  '/signup',
+  body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
+  body('password').notEmpty().withMessage('비밀번호가 필요합니다.'),
+  asyncHandler(authController.signup)
+);
+router.post(
+  '/verify',
+  body('token').notEmpty().withMessage('검증 토큰이 필요합니다.'),
+  asyncHandler(authController.verify)
+);
+router.post(
+  '/check-email',
+  body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
+  asyncHandler(authController.checkEmail)
+);
+router.post(
+  '/check-email-and-password',
+  body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
+  body('password').notEmpty().withMessage('비밀번호가 필요합니다.'),
+  asyncHandler(authController.checkEmailAndPassword)
+);
+router.post(
+  '/link-accounts',
+  body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
+  body('provider').notEmpty().withMessage('provider가 필요합니다.'),
+  asyncHandler(authController.linkAccounts)
+);
+router.post(
+  '/addinfo',
+  authenticateJWT,
+  body('userInfo').notEmpty().withMessage('추가 정보가 필요합니다.'),
+  asyncHandler(authController.addInfo)
+);
+router.post(
+  '/refresh',
+  authenticateJWT,
+  asyncHandler(authController.refresh)
+);
+// 로그아웃 라우트 (토큰 제거)
+router.post(
+  '/logout',
+  authenticateJWT,
+  asyncHandler(authController.logout)
+);
 
 export default router;

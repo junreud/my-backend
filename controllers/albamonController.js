@@ -10,272 +10,87 @@ import { getLoggedInSession } from '../config/albamonConfig.js';
 import { randomDelay } from '../config/crawler.js';
 import { io } from '../server.js';
 import { CustomerInfo, ContactInfo, CustomerContactMap } from '../models/index.js';
-import { batchProcessNaverPlaceUrls } from '../services/naverPlaceService.js';
+import * as albamonService from '../services/albamonService.js';
+import { createControllerHelper } from '../utils/controllerHelpers.js';
+
 const logger = createLogger('AlbamonController');
+const { sendSuccess, sendError, handleDbOperation, validateRequiredFields } = createControllerHelper('AlbamonController');
 
 // 메인 컨트롤러 - URL 기반 크롤링
 export const crawlAlbamonController = async (req, res) => {
   try {
-    logger.debug('crawlAlbamonController 함수 시작');
-    logger.debug(`요청 본문: ${JSON.stringify(req.body)}`);
+    const { urls } = req.body;
     
-    // URL 기반 크롤링 요청 처리
-    if (req.body.urls && Array.isArray(req.body.urls)) {
-      logger.debug('URLs 배열 확인됨, crawlAlbamonFromUrls 호출');
-      return await crawlAlbamonFromUrls(req, res);
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['urls']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
     
-    // 잘못된 요청 형식
-    logger.error(`알 수 없는 요청 형식: ${JSON.stringify(req.body)}`);
-    return res.status(400).json({ 
-      success: false,
-      message: "올바른 요청 형식이 아닙니다. 'urls' 배열이 필요합니다." 
-    });
+    if (!Array.isArray(urls)) {
+      return sendError(res, 400, "'urls'는 배열이어야 합니다.");
+    }
+    
+    const data = await handleDbOperation(async () => {
+      return await albamonService.crawlFromUrls(urls);
+    }, "URL 크롤링");
+    
+    return sendSuccess(res, data);
   } catch (error) {
-    logger.error(`crawlAlbamonController 처리 중 예외: ${error}`);
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// URL에서 view-source 제거
-const cleanUrl = (url) => url.replace(/^view-source:/, '');
-
-// HTML에서 공고 수 추출
-const extractTotalCount = ($, type) => {
-  if (type === 'search') {
-    const titleText = $('title').text();
-    const totalCountMatch = titleText.match(/(\d+(?:,\d+)*)건의?\s*(?:공고|검색결과)/);
-    if (totalCountMatch && totalCountMatch[1]) {
-      return parseInt(totalCountMatch[1].replace(/,/g, ''), 10);
-    }
-    const countElement = $('.list-header__count-value, .sr-count');
-    if (countElement.length) {
-      return parseInt(countElement.text().replace(/[^0-9]/g, ''), 10);
-    }
-  } else {
-    const countElement = $('.list-header__count-value, .area-jobs-count');
-    if (countElement.length) {
-      return parseInt(countElement.text().replace(/[^0-9]/g, ''), 10);
-    }
-    const titleText = $('title').text();
-    const totalCountMatch = titleText.match(/(\d+(?:,\d+)*)건의?\s*일자리/);
-    if (totalCountMatch && totalCountMatch[1]) {
-      return parseInt(totalCountMatch[1].replace(/,/g, ''), 10);
-    }
-  }
-  return 0;
-};
-
-// 통합 검색 페이지 파싱
-const parseSearchPage = ($) => {
-  const results = [];
-  $('.list-item-recruit--search').each((_, el) => {
-    try {
-      const linkElement = $(el).find('a.list-item-recruit__link');
-      let jobId = '';
-      if (linkElement.length) {
-        const href = linkElement.attr('href');
-        if (href) {
-          const match = href.match(/\/detail\/([^?]+)/);
-          if (match && match[1]) {
-            jobId = match[1];
-          }
-        }
-      }
-
-      const jobTitle = $(el).find('span.typography-paid').text().trim();
-      const companyName = $(el).find('.list-item-recruit__grey-text').first().text().trim();
-      const address = $(el).find('.list-item-recruit__work').text().trim();
-
-      if (jobId && jobTitle && companyName && address) {
-        results.push({ jobId, jobTitle, companyName, address });
-      }
-    } catch (err) {
-      console.warn('[WARN] 항목 파싱 중 오류:', err.message);
-    }
-  });
-  return results;
-};
-
-// 지역별 페이지 파싱
-const parseAreaPage = ($) => {
-  const results = [];
-  $('.list-item-recruit--area').each((_, el) => {
-    try {
-      const linkElement = $(el).find('a.list-item-recruit__link');
-      let jobId = '';
-      if (linkElement.length) {
-        const href = linkElement.attr('href');
-        if (href) {
-          const match = href.match(/\/detail\/([^?]+)/);
-          if (match && match[1]) {
-            jobId = match[1];
-          }
-        }
-      }
-
-      const jobTitle = $(el).find('.typography-paid').text().trim();
-      const companyName = $(el).find('.ListItemRecruit_list-item-recruit__company-name__bbljH').text().trim();
-      const address = $(el).find('.list-item-recruit__work').text().trim();
-
-      if (jobId && jobTitle && companyName && address) {
-        results.push({ jobId, jobTitle, companyName, address });
-      }
-    } catch (err) {
-      console.warn('[WARN] 항목 파싱 중 오류:', err.message);
-    }
-  });
-  return results;
-};
-
-// HTTP 요청을 위한 공통 헤더 생성
-const getCommonHeaders = (cookieStr, ua) => {
-  return {
-    'Cookie': cookieStr,
-    'User-Agent': ua,
-    'Accept': 'text/html,application/xhtml+xml',
-    'Accept-Language': 'ko-KR,ko;q=0.9',
-  };
-};
-
-// 타임아웃 가능한 fetch 함수
-const fetchWithTimeout = async (url, options, timeout = 25000) => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    return response;
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
-};
-
-// URL 기반 크롤링 컨트롤러
-export const crawlAlbamonFromUrls = async (req, res) => {
-  const { urls } = req.body;
-  const size = 50; // 페이지당 아이템 수
-  const results = [];
-
-  try {
-    // 쿠키 및 UA 로드
-    const { ua, cookieStr } = await loadAlbamonUAandCookies();
-    logger.debug('알바몬 쿠키 및 UA 로드 성공');
-
-    for (let originalUrl of urls) {
-      const url = cleanUrl(originalUrl);
-      logger.debug(`처리 중인 URL: ${url}`);
-      
-      // URL 타입 확인 (통합검색 vs 지역별)
-      const isSearch = url.includes('total-search');
-      const isArea = url.includes('/jobs/');
-      
-      if (!isSearch && !isArea) {
-        logger.warn(`지원하지 않는 URL 형식: ${url}`);
-        continue;
-      }
-      logger.debug(`URL 타입: ${isSearch ? '통합검색' : '지역별'}`);
-      
-      try {
-        // 초기 요청으로 총 개수 확인
-        const initialResponse = await fetchWithTimeout(
-          url, { method: 'GET', headers: getCommonHeaders(cookieStr, ua) }
-        );
-        
-        if (!initialResponse.ok) {
-          throw new Error(`Failed to fetch URL ${url}: ${initialResponse.status} ${initialResponse.statusText}`);
-        }
-        const initialHtml = await initialResponse.text();
-        const $ = cheerio.load(initialHtml);
-        
-        // 총 결과 수 추출
-        const totalCount = extractTotalCount($, isSearch ? 'search' : 'area');
-        const totalPages = Math.ceil(totalCount / size);
-        logger.debug(`총 공고 수: ${totalCount}, 총 페이지: ${totalPages}`);
-        
-        // 각 페이지를 순회하며 결과 추출
-        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-          const pageUrl = new URL(url);
-          pageUrl.searchParams.set('page', pageNum);
-          pageUrl.searchParams.set('size', size);
-          logger.debug(`페이지 ${pageNum}/${totalPages} 요청: ${pageUrl.toString()}`);
-          const pageResponse = await fetchWithTimeout(
-            pageUrl.toString(), { method: 'GET', headers: getCommonHeaders(cookieStr, ua) }
-          );
-          
-          if (!pageResponse.ok) {
-            throw new Error(`Failed to fetch page ${pageNum}: ${pageResponse.status} ${pageResponse.statusText}`);
-          }
-          const pageHtml = await pageResponse.text();
-          const $$ = cheerio.load(pageHtml);
-          
-          // URL 타입에 따라 다른 파싱 로직 적용
-          const parsedResults = isSearch ? parseSearchPage($$) : parseAreaPage($$);
-          logger.debug(`페이지 ${pageNum} 파싱 완료, ${parsedResults.length}개 항목 추가`);
-          results.push(...parsedResults);
-          
-          // 과도한 요청 방지를 위한 지연
-          if (pageNum < totalPages) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        }
-      } catch (urlError) {
-        logger.error(`URL 처리 중 오류: ${urlError.message}`);
-      }
-    }
-    
-    // 중복 제거 로직 추가
-    logger.debug(`중복 제거 전 항목 수: ${results.length}`);
-    const uniqueKeys = new Set();
-    const uniqueResults = [];
-    
-    for (const item of results) {
-      const addressCompanyKey = `${item.address}|${item.companyName}`.toLowerCase();
-      const addressTitleKey = `${item.address}|${item.jobTitle}`.toLowerCase();
-      
-      if (!uniqueKeys.has(addressCompanyKey) && !uniqueKeys.has(addressTitleKey)) {
-        uniqueResults.push(item);
-        uniqueKeys.add(addressCompanyKey);
-        uniqueKeys.add(addressTitleKey);
-      } else {
-        logger.debug(`중복 항목 제거: ${item.companyName} - ${item.jobTitle}`);
-      }
-    }
-    
-    logger.debug(`중복 제거 후 항목 수: ${uniqueResults.length}`);
-    logger.debug(`총 ${results.length - uniqueResults.length}개 중복 항목 제거됨`);
-    res.json({ success: true, data: uniqueResults });
-  } catch (error) {
-    logger.error(`크롤링 중 예외 발생: ${error.message}`);
-    res.status(500).json({ success: false, message: error.message });
+    return sendError(res, 500, error.message);
   }
 };
 
 // 여러 비즈니스 상세 정보 크롤링 및 DB 저장
 export const processBusinessContacts = async (req, res) => {
-  logger.debug('processBusinessContacts 함수 시작 - batchProcessJobIds로 리디렉션');
-  return batchProcessJobIds(req, res);
+  try {
+    const businesses = req.body.businesses;
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['businesses']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
+    }
+    
+    if (!Array.isArray(businesses) || businesses.length === 0) {
+      return sendError(res, 400, '유효한 businesses 배열이 필요합니다');
+    }
+    
+    const result = await handleDbOperation(async () => {
+      return await albamonService.batchProcessJobIds(businesses, io);
+    }, "비즈니스 연락처 처리");
+    
+    return sendSuccess(res, result);
+  } catch (error) {
+    return sendError(res, 500, error.message);
+  }
 };
 
 // 여러 ID를 한 번의 로그인 세션으로 처리하는 함수
 export const batchProcessJobIds = async (req, res) => {
-    const { businesses } = req.body;
-    
-    if (!Array.isArray(businesses) || businesses.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "유효한 businesses 배열이 필요합니다"
+    try {
+      const { businesses } = req.body;
+      
+      // Validate required fields
+      const validation = validateRequiredFields(req.body, ['businesses']);
+      if (validation) {
+        return sendError(res, 400, validation.message);
+      }
+      
+      if (!Array.isArray(businesses) || businesses.length === 0) {
+        return sendError(res, 400, "유효한 businesses 배열이 필요합니다");
+      }
+      
+      logger.debug(`총 ${businesses.length}개 공고 처리 시작`);
+      
+      // 초기 진행 상태 전송
+      io.emit('progressUpdate', {
+        completed: 0,
+        total: businesses.length,
+        percent: 0
       });
-    }
-    
-    logger.debug(`총 ${businesses.length}개 공고 처리 시작`);
-    
-    // 초기 진행 상태 전송
+      
+      // 크롤링 준비 - 중복 제거된 공고 ID 목록 생성
     io.emit('progressUpdate', {
       completed: 0,
       total: businesses.length,
@@ -757,10 +572,7 @@ export const batchProcessJobIds = async (req, res) => {
         await t.rollback();
         logger.error(`DB 저장 중 오류 발생, 모든 변경사항 롤백됨: ${dbError.message}`);
         
-        return res.status(500).json({
-          success: false,
-          message: `데이터 저장 중 오류가 발생했습니다: ${dbError.message}`
-        });
+        return sendError(res, 500, `데이터 저장 중 오류가 발생했습니다: ${dbError.message}`);
       }
       
       // 필터링 된 항목 수 계산
@@ -775,8 +587,7 @@ export const batchProcessJobIds = async (req, res) => {
           percent: 100
       });
       
-      return res.json({
-          success: true,
+      return sendSuccess(res, {
           totalRequested: businesses.length,
           totalProcessed: jobsToProcess.length,
           savedCount: savedCount,
@@ -796,96 +607,20 @@ export const batchProcessJobIds = async (req, res) => {
         error: error.message
       });
       
-      logger.error(`배치 처리 중 오류 발생: ${error.message}`);
-      return res.status(500).json({
-        success: false,
-        message: error.message
-      });
+      return sendError(res, 500, error.message);
     }
   };
 
   export const getCustomersWithContacts = async (req, res) => {
     try {
-      logger.debug('고객 및 연락처 통합 데이터 조회 요청');
+      const query = req.query;
+      const data = await handleDbOperation(async () => {
+        return await albamonService.getCustomersWithContacts(query);
+      }, "고객 연락처 조회");
       
-      // 페이지네이션 파라미터 처리
-      const page = parseInt(req.query.page) || 1;
-      const limit = parseInt(req.query.pageSize) || 50;
-      const offset = (page - 1) * limit;
-      
-      // 정렬 처리
-      let order;
-      if (req.query.sortBy === 'company') {
-        order = [['company_name', 'ASC']];
-      } else if (req.query.sortBy === 'address') {
-        order = [['address', 'ASC']]; 
-      } else {
-        // 기본값: 최신순 (recent 파라미터 포함)
-        order = [['created_at', 'DESC']];
-      }
-      
-      // 검색 필터링 
-      const filters = {};
-      if (req.query.search) {
-        filters[Op.or] = [
-          { company_name: { [Op.like]: `%${req.query.search}%` } },
-          { title: { [Op.like]: `%${req.query.search}%` } },
-          { address: { [Op.like]: `%${req.query.search}%` } }
-        ];
-      }
-      
-      // CustomerInfo와 연결된 모든 ContactInfo 조회
-      const result = await CustomerInfo.findAndCountAll({
-        where: filters,
-        limit,
-        offset,
-        include: [{
-          model: ContactInfo,
-          required: false,
-          through: { attributes: [] },
-          attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
-        }],
-        distinct: true,
-        order: order
-      });
-      
-      // 프론트엔드가 원하는 형식으로 변환
-      const formattedData = result.rows.map(customer => {
-        const plainCustomer = customer.get({ plain: true });
-        return {
-          id: plainCustomer.id,
-          posting_id: plainCustomer.posting_id,
-          title: plainCustomer.title,
-          company_name: plainCustomer.company_name,
-          address: plainCustomer.address || '',
-          naverplace_url: plainCustomer.naverplace_url || null,
-          source_filter: plainCustomer.source_filter || '',
-          contacts: plainCustomer.ContactInfos ? plainCustomer.ContactInfos.map(contact => ({
-            id: contact.id,
-            phone_number: contact.phone_number || '',
-            contact_person: contact.contact_person || '',
-            favorite: contact.favorite,
-            blacklist: contact.blacklist,
-            friend_add_status: contact.friend_add_status
-          })) : []
-        };
-      });
-      
-      return res.json({
-        success: true,
-        total: result.count,
-        page,
-        limit,
-        totalPages: Math.ceil(result.count / limit),
-        data: formattedData
-      });
+      return sendSuccess(res, data);
     } catch (error) {
-      logger.error(`고객 및 연락처 통합 데이터 조회 중 오류: ${error.message}`);
-      console.error('스택 트레이스:', error.stack); // 디버깅을 위한 스택 트레이스 추가
-      return res.status(500).json({
-        success: false,
-        message: error.message
-      });
+      return sendError(res, 500, error.message);
     }
   };
 

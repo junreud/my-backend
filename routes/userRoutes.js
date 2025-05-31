@@ -1,21 +1,22 @@
 // routes/userRoutes.js
 import express from "express";
-import passport from "passport";
-import dayjs from "dayjs"
-// User 모델 import (경로는 프로젝트 구조에 맞춰 수정)
-import  User  from "../models/User.js"; 
-import Place  from "../models/Place.js";
-import Keyword  from "../models/Keyword.js";
-import KeywordCrawlResult  from "../models/KeywordBasicCrawlResult.js";
-import UserPlaceKeyword  from "../models/UserPlaceKeyword.js";
+import dayjs from "dayjs";
+import { Op } from "sequelize";
+
+// Models
+import User from "../models/User.js";
+import Place from "../models/Place.js";
+import Keyword from "../models/Keyword.js";
+import UserPlaceKeyword from "../models/UserPlaceKeyword.js";
 import PlaceDetailResult from "../models/PlaceDetailResult.js";
 import KeywordBasicCrawlResult from "../models/KeywordBasicCrawlResult.js";
 import WorkHistory from "../models/WorkHistory.js";
-import { Op } from "sequelize"; // Add this import for Op.between
+
+// Utils & Middleware
 import { createLogger } from "../lib/logger.js";
+import { authenticateJWT } from "../middlewares/auth.js";
 const logger = createLogger("UserRoutesLogger");
 const router = express.Router();
-const authenticateJWT = passport.authenticate('jwt', { session: false });
 
 /**
  * (1) GET /api/users/me
@@ -24,7 +25,7 @@ const authenticateJWT = passport.authenticate('jwt', { session: false });
 router.get(
   "/user/me",
   // JWT Strategy 사용
-  passport.authenticate("jwt", { session: false }),
+  authenticateJWT,
   async (req, res) => {
     try {
       // passport-jwt 성공 시 req.user에 DB에서 찾은 user 객체가 들어있음
@@ -72,7 +73,7 @@ router.get(
  */
 router.patch(
   "/user/complete-registration",
-  passport.authenticate("jwt", { session: false }),
+  authenticateJWT,
   async (req, res) => {
     try {
       // passport-jwt 인증 성공 시 req.user에서 user 정보를 가져올 수 있음

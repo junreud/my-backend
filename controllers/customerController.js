@@ -1,32 +1,24 @@
-import { createLogger } from '../lib/logger.js';
 import CustomerInfo from '../models/CustomerInfo.js';
 import ContactInfo from '../models/ContactInfo.js';
+import { createControllerHelper } from '../utils/controllerHelpers.js';
 
-const logger = createLogger('CustomerController');
+const { sendSuccess, sendError, handleDbOperation, handleNotFound, logger } = createControllerHelper('CustomerController');
 
 // 모든 고객 정보 조회
 export const getAllCustomers = async (req, res) => {
   try {
-    logger.debug('모든 고객 정보 조회 요청');
+    const customers = await handleDbOperation(async () => {
+      return await CustomerInfo.findAll({
+        include: [{
+          model: ContactInfo,
+          attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
+        }]
+      });
+    }, '모든 고객 정보 조회');
     
-    const customers = await CustomerInfo.findAll({
-      include: [{
-        model: ContactInfo,
-        attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
-      }]
-    });
-    
-    return res.json({
-      success: true,
-      count: customers.length,
-      data: customers
-    });
+    return sendSuccess(res, customers);
   } catch (error) {
-    logger.error(`고객 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendError(res, 500, error.message);
   }
 };
 
@@ -34,33 +26,23 @@ export const getAllCustomers = async (req, res) => {
 export const getCustomerById = async (req, res) => {
   try {
     const { id } = req.params;
-    logger.debug(`고객 ID ${id} 조회 요청`);
     
-    const customer = await CustomerInfo.findByPk(id, {
-      include: [{
-        model: ContactInfo,
-        attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
-      }]
-    });
+    const customer = await handleDbOperation(async () => {
+      return await CustomerInfo.findByPk(id, {
+        include: [{
+          model: ContactInfo,
+          attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
+        }]
+      });
+    }, `고객 ID ${id} 조회`);
     
     if (!customer) {
-      logger.warn(`ID ${id}에 해당하는 고객 정보 없음`);
-      return res.status(404).json({
-        success: false,
-        message: '해당 ID의 고객 정보를 찾을 수 없습니다'
-      });
+      return handleNotFound(res, '고객 정보', id);
     }
     
-    return res.json({
-      success: true,
-      data: customer
-    });
+    return sendSuccess(res, customer);
   } catch (error) {
-    logger.error(`고객 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendError(res, 500, error.message);
   }
 };
 
@@ -68,34 +50,24 @@ export const getCustomerById = async (req, res) => {
 export const getCustomerByPostingId = async (req, res) => {
   try {
     const { postingId } = req.params;
-    logger.debug(`공고 ID ${postingId} 조회 요청`);
     
-    const customer = await CustomerInfo.findOne({
-      where: { posting_id: postingId },
-      include: [{
-        model: ContactInfo,
-        attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
-      }]
-    });
+    const customer = await handleDbOperation(async () => {
+      return await CustomerInfo.findOne({
+        where: { posting_id: postingId },
+        include: [{
+          model: ContactInfo,
+          attributes: ['id', 'phone_number', 'contact_person', 'favorite', 'blacklist', 'friend_add_status']
+        }]
+      });
+    }, `공고 ID ${postingId} 조회`);
     
     if (!customer) {
-      logger.warn(`공고 ID ${postingId}에 해당하는 고객 정보 없음`);
-      return res.status(404).json({
-        success: false,
-        message: '해당 공고 ID의 고객 정보를 찾을 수 없습니다'
-      });
+      return handleNotFound(res, '해당 공고 ID의 고객 정보');
     }
     
-    return res.json({
-      success: true,
-      data: customer
-    });
+    return sendSuccess(res, customer);
   } catch (error) {
-    logger.error(`고객 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendError(res, 500, error.message);
   }
 };
 
@@ -103,34 +75,23 @@ export const getCustomerByPostingId = async (req, res) => {
 export const getContactsByPostingId = async (req, res) => {
   try {
     const { postingId } = req.params;
-    logger.debug(`공고 ID ${postingId}의 모든 연락처 조회 요청`);
     
-    const contacts = await ContactInfo.findAll({
-      where: { posting_id: postingId },
-      include: [{
-        model: CustomerInfo,
-        attributes: ['title', 'company_name', 'address']
-      }]
-    });
+    const contacts = await handleDbOperation(async () => {
+      return await ContactInfo.findAll({
+        where: { posting_id: postingId },
+        include: [{
+          model: CustomerInfo,
+          attributes: ['title', 'company_name', 'address']
+        }]
+      });
+    }, `공고 ID ${postingId}의 모든 연락처 조회`);
     
     if (!contacts || contacts.length === 0) {
-      logger.warn(`공고 ID ${postingId}에 해당하는 연락처 정보 없음`);
-      return res.status(404).json({
-        success: false,
-        message: '해당 공고 ID의 연락처 정보를 찾을 수 없습니다'
-      });
+      return handleNotFound(res, '해당 공고 ID의 연락처 정보');
     }
     
-    return res.json({
-      success: true,
-      count: contacts.length,
-      data: contacts
-    });
+    return sendSuccess(res, contacts);
   } catch (error) {
-    logger.error(`연락처 정보 조회 중 오류: ${error.message}`);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendError(res, 500, error.message);
   }
 };

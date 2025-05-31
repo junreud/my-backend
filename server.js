@@ -19,11 +19,17 @@ import kakaoRoutes from "./routes/kakaoRoutes.js";
 import templateRoutes from './routes/templateRoutes.js';
 import { getDailySummary } from './controllers/statsController.js';
 import bugReportRoutes from './routes/bugReportRoutes.js';
+import jwt from 'jsonwebtoken';
+import User from './models/User.js';
+import createLogger from './lib/logger.js';
+import { asyncHandler, authenticateJWT } from './middlewares/auth.js';
+import notificationRoutes from './routes/notificationRoutes.js';
 
 // Load queue worker to register processing handlers and schedules
 import "./services/crawler/keywordQueue.js";
 
   const app = express();
+  const logger = createLogger('server');
   let server;
 
   // Always serve HTTPS with self-signed certificate in development and production
@@ -48,14 +54,31 @@ import "./services/crawler/keywordQueue.js";
     }
   });
 
+  // Socket.IO 인증: Authorization header or auth token via handshake.auth
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.handshake.auth.token ||
+        (socket.handshake.headers.authorization || '').split(' ')[1];
+      if (!token) throw new Error('No token');
+      const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+      const user = await User.findByPk(payload.userId);
+      if (!user) throw new Error('Invalid user');
+      socket.join(`user_${user.id}`);
+      next();
+    } catch (err) {
+      logger.error('[Socket.IO] auth error:', err.message);
+      next(new Error('Unauthorized'));
+    }
+  });
+
   // io를 전역으로 사용할 수 있도록 설정
   app.set('socketio', io);
 
   io.on('connection', (socket) => {
-    console.log(`[Socket.IO] 클라이언트 연결: ${socket.id}`);
+    logger.info(`[Socket.IO] 클라이언트 연결: ${socket.id}`);
 
     socket.on('disconnect', () => {
-      console.log(`[Socket.IO] 클라이언트 연결 종료: ${socket.id}`);
+      logger.info(`[Socket.IO] 클라이언트 연결 종료: ${socket.id}`);
     });
   });
 
@@ -87,22 +110,36 @@ import "./services/crawler/keywordQueue.js";
   app.use('/bug-report', bugReportRoutes);
 
   // 통계 API: 오늘의 사용자 및 신규 클라이언트 집계
-  app.get(
+  app.use(
     "/stats/daily-summary",
-    passport.authenticate('jwt', { session: false }),
-    getDailySummary
+    authenticateJWT,
+    asyncHandler(getDailySummary)
   );
+  // 알림 API
+  app.use('/api/notifications', notificationRoutes);
+  
+  // 404 Not Found 핸들러
+  app.use((req, res) => {
+    logger.warn(`404 Not Found: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ success: false, message: 'Not Found' });
+  });
+
+  // 전역 에러 핸들러
+  app.use((err, req, res, next) => {
+    logger.error('Unhandled error:', err);
+    res.status(err.status || 500).json({ success: false, message: err.message || 'Internal Server Error' });
+  });
 
 // Redis 및 DB 연결
 await connectRedis();
 await sequelize.sync();
-console.log("DB sync OK");
+logger.info("DB sync OK");
 
   const PORT = process.env.PORT || 4000;
 
   // Start HTTPS server
   server.listen(PORT, () => {
-    console.log(`${process.env.NODE_ENV || 'server'} HTTPS server running on https://localhost:${PORT}`);
+    logger.info(`${process.env.NODE_ENV || 'server'} HTTPS server running on https://localhost:${PORT}`);
   });
 
   export { io };

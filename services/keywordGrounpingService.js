@@ -5,8 +5,6 @@
  *  - 공통 설정/함수는 crawler.js에서 import
  ******************************************************/
 import puppeteer from "puppeteer";
-import fs from "fs";
-import path from "path";
 import {createLogger} from '../lib/logger.js';
 
 const logger = createLogger('KeywordGroupingService');

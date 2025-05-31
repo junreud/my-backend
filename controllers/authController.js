@@ -1,14 +1,16 @@
 // controllers/authController.js (ESM)
 
 import jwt from 'jsonwebtoken';
-import 'dotenv/config'; // for process.env
 import User from '../models/User.js';
 import { redisClient } from '../config/redisClient.js';
 import { sendVerificationCode } from '../services/emailService.js';
 import bcrypt from 'bcrypt';
 import { createLogger } from '../lib/logger.js';
+import * as authService from '../services/authService.js';
+import { createControllerHelper } from '../utils/controllerHelpers.js';
 
 const logger = createLogger('AuthController');
+const { sendSuccess, sendError, handleDbOperation, validateRequiredFields } = createControllerHelper('AuthController');
 
 // TODO: coolsms 모듈을 사용하여 문자 메시지 전송 마무리
 // ------------------------------------------------------------
@@ -40,45 +42,21 @@ export async function issueTokens(userId) {
 // ------------------------------------------------------------
 // [2] Refresh 요청
 // ------------------------------------------------------------
-export async function refresh(req, res) {
-  console.log("===== REFRESH 요청 =====");
-  console.log("쿠키 존재 여부:", !!req.cookies);
-  console.log("모든 쿠키:", req.cookies);
-  console.log("refreshToken 쿠키:", req.cookies.refreshToken);
-  console.log("요청 헤더:", req.headers);
-  
+export async function refresh(req, res, next) {
   try {
-    // 쿠키에서 리프레시 토큰 추출
-    const refreshToken = req.cookies.refreshToken;
-    if (!refreshToken) {
-      return res.status(400).json({ message: 'No refresh token' });
+    const token = req.cookies.refreshToken;
+    
+    if (!token) {
+      return sendError(res, 401, 'No refresh token');
     }
-
-    const user = await User.findByRefreshToken(refreshToken);
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid refresh token' });
-    }
-
-    // 토큰 유효성 검사
-    try {
-      jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-    } catch (err) {
-      return res.status(401).json({ message: 'Refresh token expired or invalid' });
-    }
-
-    // Access Token 재발급
-    const newAccessToken = createAccessToken(user.id);
-    // (3) 새로운 AccessToken -> HttpOnly 쿠키 (for SSR/발급 후 갱신)
-    res.cookie('token', newAccessToken, {
-      httpOnly: true,
-      secure: getSecureCookieSetting(),
-      sameSite: 'none',
-      path: '/',
-    });
-    return res.json({ accessToken: newAccessToken });
+    
+    const tokens = await handleDbOperation(async () => {
+      return await authService.refreshTokens(token);
+    }, "토큰 갱신");
+    
+    return sendSuccess(res, tokens);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: '서버 에러' });
+    next(err);
   }
 }
 
@@ -163,69 +141,28 @@ export async function addInfo(req, res) {
 // [4] 회원가입 (Local Signup)
 // ------------------------------------------------------------
 export async function signup(req, res, next) {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ message: '이메일이 필요합니다.' });
-  }
-
   try {
-    // 1) 이미 가입된 이메일인지 확인 (선택)
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ message: '이미 가입된 이메일입니다.' });
-    }
-
-    // 2) 인증코드 생성 & Redis 저장 (5분)
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    await redisClient.setEx(`verifyCode:${email}`, 300, code);
-
-    // 3) 이메일 발송
-    await sendVerificationCode(email, code);
-
-    return res.json({
-      message: '인증코드가 이메일로 발송되었습니다.',
-      note: '인증코드 검증은 /verify에서 진행',
-    });
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
+    const user = await authService.signupLocal(email, password);
+    return res.status(201).json(user);
   } catch (err) {
-    console.error('[SIGNUP ERROR]', err);
-    return res.status(500).json({ message: '서버 에러, 인증코드 발송 실패' });
+    next(err);
   }
 }
 
 // ------------------------------------------------------------
 // [5] 이메일 인증
 // ------------------------------------------------------------
-export async function verify(req, res) {
-  const { email, code, password } = req.body; // password도 함께 받아야 함(로컬 가입 시)
-
-  // 1) Redis
-  const storedCode = await redisClient.get(`verifyCode:${email}`);
-  if (!storedCode) {
-    return res.status(400).json({ message: '인증코드가 만료되었거나 없음' });
+export async function verify(req, res, next) {
+  try {
+    const { email, code } = req.body;
+    if (!email || !code) return res.status(400).json({ message: 'email and code required' });
+    await authService.verifyEmailCode(email, code);
+    return res.json({ verified: true });
+  } catch (err) {
+    next(err);
   }
-  if (storedCode !== code) {
-    return res.status(400).json({ message: '인증코드가 일치하지 않습니다.' });
-  }
-
-  // 2) 인증 성공 -> code 삭제
-  await redisClient.del(`verifyCode:${email}`);
-
-  // 3) DB user 생성 or 찾기
-  let user = await User.findOne({ where: { email, provider: 'local' } });
-  if (!user) {
-    // 비번 해싱
-    const hashedPw = await bcrypt.hash(password, 10);
-    user = await User.create({
-      email,
-      password: hashedPw,
-      provider: 'local',
-      is_completed: false,  // add-info 단계 전
-    });
-  }
-  return res.json({
-    message: '인증 성공! 이제 /add-info 단계로 가세요.',
-    verified: true,
-  });
 }
 
 // ------------------------------------------------------------
@@ -248,26 +185,14 @@ export async function checkEmail(req, res) {
 // ------------------------------------------------------------
 // [7] 이메일/비밀번호 체크
 // ------------------------------------------------------------
-export async function checkEmailAndPassword(req, res) {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ message: "이메일/비밀번호가 필요합니다." });
+export async function checkEmailAndPassword(req, res, next) {
+  try {
+    const { email, password } = req.body;
+    const user = await authService.checkEmailAndPassword(email, password);
+    return res.json({ message: '로그인 성공', user });
+  } catch (err) {
+    next(err);
   }
-  
-  // 1) DB에서 user 찾기
-  const user = await User.findOne({ where: { email } });
-  if (!user) {
-    return res.status(404).json({ message: "가입되지 않은 이메일" });
-  }
-
-  // 2) 비번 비교
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) {
-    return res.status(401).json({ message: "비밀번호가 일치하지 않습니다." });
-  }
-
-  // 3) 성공
-  return res.json({ message: "로그인 성공", user });
 }
 
 // ------------------------------------------------------------
@@ -312,27 +237,14 @@ export async function linkAccounts(req, res) {
 // ------------------------------------------------------------
 // [X] Logout: clear refresh token and cookie
 // ------------------------------------------------------------
-export async function logout(req, res) {
+export async function logout(req, res, next) {
   try {
-    const refreshToken = req.cookies.refreshToken;
-    if (refreshToken) {
-      const user = await User.findByRefreshToken(refreshToken);
-      if (user) {
-        user.refresh_token = null;
-        await user.save();
-      }
-    }
-    // clear cookie
-    res.clearCookie('refreshToken', {
-      httpOnly: true,
-      secure: getSecureCookieSetting(),
-      sameSite: 'none',
-      path: '/',
-    });
-    return res.json({ message: '로그아웃 성공' });
+    const userId = req.user.id;
+    await authService.logoutUser(userId);
+    res.clearCookie('refreshToken');
+    return res.sendStatus(204);
   } catch (err) {
-    console.error('[ERROR] logout:', err);
-    return res.status(500).json({ message: '서버 오류' });
+    next(err);
   }
 }
 

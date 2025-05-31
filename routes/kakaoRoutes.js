@@ -1,18 +1,40 @@
 import express from 'express';
-import passport from 'passport';
-import { addFriends } from '../controllers/kakaoController.js';
-import { createLogger } from '../lib/logger.js';
-import { sendMessages } from '../controllers/kakaoController.js';
+import { body } from 'express-validator';
 
-const logger = createLogger('KakaoRoutes');
+// Controllers
+import { addFriends, sendMessages } from '../controllers/kakaoController.js';
+
+// Utils & Middleware
+import { createRouterWithAuth, handleValidationErrors } from '../middlewares/common.js';
 
 const router = express.Router();
-const authenticateJWT = passport.authenticate('jwt', { session: false });
+const { authAndLog, sendSuccess, sendError, asyncHandler, logger } = createRouterWithAuth('kakaoRoutes');
 
-// 컨트롤러 로직을 사용하여 친구추가 처리
-router.post('/add-friends', authenticateJWT, addFriends);
+// 공통 JWT 인증 및 요청 로깅
+router.use(authAndLog);
 
-// 컨트롤러 로직을 사용하여 메시지 전송 처리
-router.post('/send', authenticateJWT, sendMessages);
+// 친구추가 처리
+router.post(
+  '/add-friends',
+  body('friendIds').isArray().withMessage('friendIds 배열이 필요합니다.'),
+  handleValidationErrors,
+  asyncHandler(async (req, res) => {
+    logger.debug('add-friends 처리 시작');
+    const result = await addFriends(req, res);
+    return sendSuccess(res, result);
+  })
+);
+
+// 메시지 전송 처리
+router.post(
+  '/send',
+  body('message').notEmpty().withMessage('message 내용이 필요합니다.'),
+  handleValidationErrors,
+  asyncHandler(async (req, res) => {
+    logger.debug('send 처리 시작');
+    const result = await sendMessages(req, res);
+    return sendSuccess(res, result);
+  })
+);
 
 export default router;

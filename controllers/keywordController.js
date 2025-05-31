@@ -16,10 +16,10 @@ import { Op } from "sequelize";
 import { crawlKeywordBasic } from "../services/crawler/basicCrawlerService.js";
 import { createLogger } from '../lib/logger.js';
 import { keywordQueue } from "../services/crawler/keywordQueue.js";
-import { addUserBasicJob } from "../services/crawler/keywordQueue.js"; // 추가: 키워드 큐 함수 임포트
 import { checkIsRestaurantByDOM } from "../services/isRestaurantChecker.js"; // 추가: isRestaurant 확인 함수 임포트
+import { createControllerHelper } from '../utils/controllerHelpers.js';
 
-const logger = createLogger('KeywordControllerLogger');
+const { sendSuccess, sendError, handleDbOperation, validateRequiredFields, handleNotFound, validateArray, logger } = createControllerHelper('KeywordController');
 /**
  * 사용자가 이미 해당 장소를 등록했는지 확인하는 함수
  * @param {string} userId 사용자 ID
@@ -39,7 +39,7 @@ async function checkPlaceExists(userId, placeId) {
     // 결과가 있으면 이미 등록된 장소
     return !!place;
   } catch (error) {
-    console.error('[ERROR] checkPlaceExists:', error);
+    logger.error('[ERROR] checkPlaceExists:', error);
     // 에러 발생 시 false 반환 (정상 흐름 유지)
     return false;
   }
@@ -49,32 +49,35 @@ export async function normalizeUrlHandler(req, res) {
   try {
     logger.info('[INFO] normalizeUrlHandler body:', req.body);
     const { url, platform, userId } = req.body;
-    if (platform !== "naver") {
-      return res.status(400).json({ success: false, message: "현재는 NAVER 플랫폼만 지원합니다." });
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['url', 'platform']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
-    if (!url) {
-      return res.status(400).json({ success: false, message: "url 파라미터가 필요합니다." });
+    
+    if (platform !== "naver") {
+      return sendError(res, 400, "현재는 NAVER 플랫폼만 지원합니다.");
     }
 
-    const normalizedUrl = await normalizePlaceUrl(url);
+    const normalizedUrl = await handleDbOperation(async () => {
+      return await normalizePlaceUrl(url);
+    }, "URL 정규화");
+    
     if (!normalizedUrl) {
-      return res
-        .status(400)
-        .json({ success: false, message: "URL을 정규화할 수 없습니다." });
+      return sendError(res, 400, "URL을 정규화할 수 없습니다.");
     }
 
     // (1) 장소 정보 가져오기
-    const placeInfo = await getNaverPlaceFullInfo(normalizedUrl)
+    const placeInfo = await handleDbOperation(async () => {
+      return await getNaverPlaceFullInfo(normalizedUrl);
+    }, "장소 정보 조회");
 
     // (2) Passport JWT 인증이 붙어 있다면, 여기서 req.user가 존재
     //     userId를 placeInfo에 추가하여 프론트로 전달
     const authenticatedUserId = req.user?.id || userId;
     if (!authenticatedUserId) {
-      // 혹은 필요 시 401 리턴
-      return res.status(401).json({
-        success: false,
-        message: "인증되지 않은 사용자입니다.",
-      });
+      return sendError(res, 401, "인증되지 않은 사용자입니다.");
     }
     
     // placeInfo에 userid 필드로 넣기
@@ -84,29 +87,26 @@ export async function normalizeUrlHandler(req, res) {
     // URL에서 place_id 추출 (restaurant/12345678 또는 place/12345678 형식에서)
     const match = normalizedUrl.match(/(?:place\/|restaurant\/|cafe\/|\/)(\d+)(?:\/|$|\?)/);
     if (!match) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "URL에서 place ID를 추출할 수 없습니다." 
-      });
+      return sendError(res, 400, "URL에서 place ID를 추출할 수 없습니다.");
     }
     const placeId = match[1];
 
     // (4) DB에서 이미 등록된 place_id인지 확인
-    const alreadyRegistered = await checkPlaceExists(authenticatedUserId, placeId);
+    const alreadyRegistered = await handleDbOperation(async () => {
+      return await checkPlaceExists(authenticatedUserId, placeId);
+    }, "장소 중복 확인");
 
     logger.info(`[INFO] Normalized URL = ${normalizedUrl}`);
     logger.info(`[INFO] Place Info = ${JSON.stringify(placeInfo)}`);
     logger.info(`[INFO] Already Registered = ${alreadyRegistered}`);
     
-    return res.json({
-      success: true,
+    return sendSuccess(res, {
       normalizedUrl,
       placeInfo,
       alreadyRegistered // 중복 등록 여부 플래그 추가
     });
   } catch (err) {
-    logger.error("[ERROR] normalizeUrlHandler:", err);
-    return res.status(500).json({ success: false, message: err.message });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -117,31 +117,36 @@ export async function normalizeUrlHandler(req, res) {
  */
 export async function storePlaceHandler(req, res) {
   try {
-    logger.info('storePlaceHandler body =', req.body)
-    const { user_id, place_id, place_name, category, platform } = req.body
-    if (!user_id || !place_id || !place_name) {
-      return res.status(400).json({
-        success: false,
-        message: "user_id, place_id, place_name은 필수입니다.",
-      })
+    logger.info('storePlaceHandler body =', req.body);
+    const { user_id, place_id, place_name, category, platform } = req.body;
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['user_id', 'place_id', 'place_name']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
 
     // (A) 중복 체크
-    const existing = await Place.findOne({ where: { user_id, place_id } })
+    const existing = await handleDbOperation(async () => {
+      return await Place.findOne({ where: { user_id, place_id } });
+    }, "장소 중복 확인");
+    
     if (existing) {
       logger.info(
         `[INFO] place_id=${place_id} is already registered for user_id=${user_id}, skipping creation.`
-      )
-      return res.json({ success: true, message: "이미 등록된 place이므로 새로 생성하지 않았습니다." })
+      );
+      return sendSuccess(res, {}, "이미 등록된 place이므로 새로 생성하지 않았습니다.");
     }
 
     // (B) DB 저장
-    await Place.create({ user_id, place_id, place_name, category })
-    logger.info(`[INFO] Stored place = ${place_name} (${place_id}) for user ${user_id}`)
-    return res.json({ success: true })
+    await handleDbOperation(async () => {
+      return await Place.create({ user_id, place_id, place_name, category });
+    }, "장소 저장");
+    
+    logger.info(`[INFO] Stored place = ${place_name} (${place_id}) for user ${user_id}`);
+    return sendSuccess(res, {});
   } catch (err) {
-    logger.error("[ERROR] storePlaceHandler:", err)
-    return res.status(500).json({ success: false, message: err.message })
+    return sendError(res, 500, err.message);
   }
 }
 /**
@@ -150,77 +155,80 @@ export async function storePlaceHandler(req, res) {
  */
 export async function chatgptKeywordsHandler(req, res) {
   try {
-    const { placeInfo } = req.body
+    const { placeInfo } = req.body;
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['placeInfo']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
+    }
+    
     // placeInfo에는 { shopIntro, blogReviewTitles... } 등 정보가 있다고 가정
 
     // URL에서 restaurant 여부 확인
     const isRestaurant = placeInfo.normalizedUrl && 
-                          placeInfo.normalizedUrl.includes("restaurant") ? true : false
+                          placeInfo.normalizedUrl.includes("restaurant") ? true : false;
     
     // placeInfo에 isRestaurant 정보 추가
     const placeInfoWithType = {
       ...placeInfo,
       isRestaurant
-    }
+    };
 
     // ChatGPT 분석 (isRestaurant 정보 포함하여 전달)
-    const { locationKeywords, featureKeywords } = await analyzePlaceWithChatGPT(placeInfoWithType)
+    const { locationKeywords, featureKeywords } = await handleDbOperation(async () => {
+      return await analyzePlaceWithChatGPT(placeInfoWithType);
+    }, "ChatGPT 키워드 분석");
 
     // 혹은 category 쓰일 수 있음
     if (!locationKeywords.length && !featureKeywords.length) {
       // 빈 값이라도 일단 응답
-      return res.json({ success: true, locationKeywords: [], featureKeywords: [] })
+      return sendSuccess(res, { locationKeywords: [], featureKeywords: [] });
     }
-    logger.info(`[INFO] ChatGPT Keywords: ${locationKeywords}, ${featureKeywords}`)
-    return res.json({
-      success: true,
+    
+    logger.info(`[INFO] ChatGPT Keywords: ${locationKeywords}, ${featureKeywords}`);
+    return sendSuccess(res, {
       locationKeywords,
       featureKeywords,
-    })
+    });
   } catch (err) {
-    logger.error("[ERROR] chatgptKeywordsHandler:", err)
-    return res.status(500).json({ success: false, message: err.message })
+    return sendError(res, 500, err.message);
   }
 }
 
 // (B) Express 라우트 핸들러
 export async function combineLocationAndFeaturesHandler(req, res) {
   try {
-    logger.debug("[DEBUG] /keyword/combine req.body =", req.body)
+    logger.debug("[DEBUG] /keyword/combine req.body =", req.body);
     // 1) req.body 로부터 locationKeywords, featureKeywords 추출
-    const { locationKeywords, featureKeywords } = req.body
+    const { locationKeywords, featureKeywords } = req.body;
 
     // 2) validation
-    if (!Array.isArray(locationKeywords) || !Array.isArray(featureKeywords)) {
-      return res.status(400).json({
-        success: false,
-        message: "locationKeywords, featureKeywords must be arrays",
-      })
+    if (!validateArray(res, locationKeywords, 'locationKeywords') || 
+        !validateArray(res, featureKeywords, 'featureKeywords')) {
+      return; // validateArray already sent response
     }
+    
     // (A) 순수 로직 함수
     function combineLocationAndFeatures({ locationKeywords, featureKeywords }) {
-      const combinedSet = new Set()
+      const combinedSet = new Set();
       for (const loc of locationKeywords) {
         for (const feat of featureKeywords) {
-          const keyword = loc + feat
-          combinedSet.add(keyword)
+          const keyword = loc + feat;
+          combinedSet.add(keyword);
         }
       }
       // 최대 100개만
-      return Array.from(combinedSet).slice(0, 100)
+      return Array.from(combinedSet).slice(0, 100);
     }
 
     // 3) 위에서 만든 순수 로직 함수 호출
-    const finalArr = combineLocationAndFeatures({ locationKeywords, featureKeywords })
+    const finalArr = combineLocationAndFeatures({ locationKeywords, featureKeywords });
 
     // 4) 응답
-    return res.json({
-      success: true,
-      candidateKeywords: finalArr,
-    })
+    return sendSuccess(res, { candidateKeywords: finalArr });
   } catch (err) {
-    logger.error("[ERROR] combineLocationAndFeaturesHandler:", err)
-    return res.status(500).json({ success: false, message: err.message })
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -234,59 +242,60 @@ export async function searchVolumesHandler(req, res) {
     // 1) candidateKeywords와 normalizedUrl 읽기
     const { candidateKeywords, normalizedUrl } = req.body;
 
-    const isRestaurant = normalizedUrl && normalizedUrl.includes("restaurant") ? 1 : 0;
-
-    if (!Array.isArray(candidateKeywords)) {
-      return res.status(400).json({
-        success: false,
-        message: "candidateKeywords must be an array",
-      });
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['candidateKeywords']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
 
+    if (!validateArray(res, candidateKeywords, 'candidateKeywords')) {
+      return; // validateArray already sent response
+    }
+
+    const isRestaurant = normalizedUrl && normalizedUrl.includes("restaurant") ? 1 : 0;
+
     // 3) 검색광고 API 조회
-    const externalDataList = await getSearchVolumes(candidateKeywords);
+    const externalDataList = await handleDbOperation(async () => {
+      return await getSearchVolumes(candidateKeywords);
+    }, "검색량 조회");
+    
     logger.info(`[INFO] External Data List: ${JSON.stringify(externalDataList)}`);
 
     // 필터: 검색량 null 또는 200 미만인 키워드는 제외
     const filteredDataList = externalDataList.filter(d => typeof d.monthlySearchVolume === 'number' && d.monthlySearchVolume >= 200);
 
     // 4) DB 저장/업데이트 (필터된 리스트만)
-    await Promise.all(
-      filteredDataList.map(async (data) => {
-        const { keyword, monthlySearchVolume } = data;
-        if (!keyword) return;
+    await handleDbOperation(async () => {
+      return Promise.all(
+        filteredDataList.map(async (data) => {
+          const { keyword, monthlySearchVolume } = data;
+          if (!keyword) return;
 
-        // DB에서 keyword 일치 여부 확인
-        let keywordRecord = await Keyword.findOne({ where: { keyword } });
-        if (keywordRecord) {
-          // 이미 있으면 monthlySearchVolume, last_search_volume 업데이트
-          await keywordRecord.update({
-            monthlySearchVolume,
-            last_search_volume: monthlySearchVolume
-          });
-        } else {
-          // 없으면 새로 생성
-          await Keyword.create({
-            keyword,
-            monthlySearchVolume,
-            last_search_volume: monthlySearchVolume,
-            isRestaurant
-          });
-        }
-      })
-    );
+          // DB에서 keyword 일치 여부 확인
+          let keywordRecord = await Keyword.findOne({ where: { keyword } });
+          if (keywordRecord) {
+            // 이미 있으면 monthlySearchVolume, last_search_volume 업데이트
+            await keywordRecord.update({
+              monthlySearchVolume,
+              last_search_volume: monthlySearchVolume
+            });
+          } else {
+            // 없으면 새로 생성
+            await Keyword.create({
+              keyword,
+              monthlySearchVolume,
+              last_search_volume: monthlySearchVolume,
+              isRestaurant
+            });
+          }
+        })
+      );
+    }, "키워드 저장/업데이트");
 
     // 5) 응답 (필터된 리스트만 반환)
-    return res.json({
-      success: true,
-      externalDataList: filteredDataList
-    });
+    return sendSuccess(res, { externalDataList: filteredDataList });
   } catch (err) {
-    logger.error("[ERROR] searchVolumesHandler:", err);
-    return res.status(500).json({
-      success: false,
-      message: err.message,
-    });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -298,11 +307,15 @@ export async function searchVolumesHandler(req, res) {
 export async function groupKeywordsHandler(req, res) {
   try {
     const { externalDataList } = req.body;
-    if (!externalDataList || !Array.isArray(externalDataList)) {
-      return res.status(400).json({
-        success: false,
-        message: "externalDataList 배열 필요",
-      });
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['externalDataList']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
+    }
+
+    if (!validateArray(res, externalDataList, 'externalDataList')) {
+      return; // validateArray already sent response
     }
 
     // 클라이언트 타임아웃 방지를 위해 처리할 키워드 수 제한
@@ -314,29 +327,29 @@ export async function groupKeywordsHandler(req, res) {
     }
     
     // 항상 동기적으로 처리 (비동기 처리 제거)
-    const finalKeywords = await groupKeywordsByNaverTop10(limitedKeywords);
+    const finalKeywords = await handleDbOperation(async () => {
+      return await groupKeywordsByNaverTop10(limitedKeywords);
+    }, "키워드 그룹핑");
     
     // 모든 그룹을 저장 (단일 키워드 그룹 포함)
     if (finalKeywords && finalKeywords.length > 0) {
-      await saveAllKeywordGroupsLogic(finalKeywords);
+      await handleDbOperation(async () => {
+        return await saveAllKeywordGroupsLogic(finalKeywords);
+      }, "키워드 그룹 저장");
+      
       logger.info(`[INFO] 키워드 그룹화 완료: ${finalKeywords.length}개 그룹 생성`);
       
       // 그룹화 결과 반환 (모든 케이스에서 동일한 형식)
-      return res.json({
-        success: true,
-        message: `키워드 그룹화 완료: ${finalKeywords.length}개 그룹 생성`,
-        finalKeywords,
-      });
+      return sendSuccess(res, { 
+        finalKeywords 
+      }, `키워드 그룹화 완료: ${finalKeywords.length}개 그룹 생성`);
     } else {
-      return res.json({
-        success: true,
-        message: "그룹화된 키워드가 없습니다.",
-        finalKeywords: [],
-      });
+      return sendSuccess(res, { 
+        finalKeywords: [] 
+      }, "그룹화된 키워드가 없습니다.");
     }
   } catch (err) {
-    logger.error("[ERROR] groupKeywordsHandler:", err);
-    return res.status(500).json({ success: false, message: err.message });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -573,21 +586,26 @@ async function saveKeywordRelations(keywordIds, combinedKeyword) {
 export async function saveGroupedKeywordsHandler(req, res) {
   try {
     const { finalKeywords } = req.body;
-    if (!Array.isArray(finalKeywords)) {
-      return res.status(400).json({
-        success: false,
-        message: "finalKeywords 배열이 필요합니다.",
-      });
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['finalKeywords']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
+    }
+
+    if (!validateArray(res, finalKeywords, 'finalKeywords')) {
+      return; // validateArray already sent response
     }
 
     // 바로 로직 함수 호출
-    await saveGroupedKeywordsLogic(finalKeywords);
+    await handleDbOperation(async () => {
+      return await saveGroupedKeywordsLogic(finalKeywords);
+    }, "그룹화된 키워드 저장");
 
     logger.info("[INFO] Grouped keywords saved.");
-    return res.json({ success: true, message: "Grouped keywords saved." });
+    return sendSuccess(res, {}, "Grouped keywords saved.");
   } catch (err) {
-    logger.error("[ERROR] saveGroupedKeywordsHandler:", err);
-    return res.status(500).json({ success: false, message: err.message });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -604,17 +622,23 @@ export async function saveSelectedKeywordsHandler(req, res) {
     const { placeId, keywords } = req.body;
     const place_id = placeId;
 
-    // Fetch existing Place record
-    const placeRecord = await Place.findOne({ where: { user_id, place_id } });
-    if (!placeRecord) {
-      return res.status(400).json({ success: false, message: '먼저 장소를 저장해주세요.' });
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['placeId', 'keywords']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
 
-    if (!keywords || !Array.isArray(keywords)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'keywords 배열이 필요합니다' 
-      });
+    if (!validateArray(res, keywords, 'keywords')) {
+      return; // validateArray already sent response
+    }
+
+    // Fetch existing Place record
+    const placeRecord = await handleDbOperation(async () => {
+      return await Place.findOne({ where: { user_id, place_id } });
+    }, "장소 조회");
+    
+    if (!placeRecord) {
+      return sendError(res, 400, '먼저 장소를 저장해주세요.');
     }
 
     // 1) 입력된 키워드를 DB(Keyword 테이블)에 저장
@@ -762,13 +786,9 @@ export async function saveSelectedKeywordsHandler(req, res) {
       }
     }
 
-    return res.json({
-      success: true,
-      message: `${createdIds.length}개 키워드가 저장되고, 필요 시 크롤링이 진행됩니다.`,
-    });
+    return sendSuccess(res, {}, `${createdIds.length}개 키워드가 저장되고, 필요 시 크롤링이 진행됩니다.`);
   } catch (err) {
-    logger.error('[ERROR] saveSelectedKeywordsHandler:', err);
-    return res.status(500).json({ success: false, message: err.message });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -778,12 +798,17 @@ export const addUserKeywordHandler = async (req, res) => {
   try {
     const { userId, placeId, keyword } = req.body;
 
-    if (!userId || !placeId || !keyword) {
-      return res.status(400).json({ message: "필수 필드가 누락되었습니다." });
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['userId', 'placeId', 'keyword']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
 
     // 1. 키워드 레코드 찾기
-    let keywordRecord = await Keyword.findOne({ where: { keyword } });
+    let keywordRecord = await handleDbOperation(async () => {
+      return await Keyword.findOne({ where: { keyword } });
+    }, "키워드 조회");
+    
     let created = false;
 
     // 2. 키워드가 존재하지 않으면 isRestaurant 판별 후 생성
@@ -805,21 +830,27 @@ export const addUserKeywordHandler = async (req, res) => {
       }
 
       // 2-2. isRestaurantChecker.js의 함수를 사용하여 restaurant 여부 확인
-      await checkIsRestaurantByDOM(keyword);
+      await handleDbOperation(async () => {
+        return await checkIsRestaurantByDOM(keyword);
+      }, "레스토랑 여부 확인");
       
       // 2-3. checkIsRestaurantByDOM은 내부적으로 키워드를 생성하므로, 다시 조회
-      keywordRecord = await Keyword.findOne({ where: { keyword } });
+      keywordRecord = await handleDbOperation(async () => {
+        return await Keyword.findOne({ where: { keyword } });
+      }, "키워드 재조회");
       
       if (!keywordRecord) {
-        return res.status(500).json({ message: "키워드 생성 중 오류가 발생했습니다." });
+        return sendError(res, 500, "키워드 생성 중 오류가 발생했습니다.");
       }
 
       // 2-4. 검색량 정보 업데이트
       if (searchVolume > 0) {
-        await keywordRecord.update({
-          last_search_volume: searchVolume,
-          monthlySearchVolume: searchVolume
-        });
+        await handleDbOperation(async () => {
+          return await keywordRecord.update({
+            last_search_volume: searchVolume,
+            monthlySearchVolume: searchVolume
+          });
+        }, "검색량 업데이트");
         logger.info(`[INFO] 키워드 "${keyword}" 검색량(${searchVolume}) 저장 완료`);
       }
       
@@ -844,9 +875,7 @@ export const addUserKeywordHandler = async (req, res) => {
             logger.info(`[INFO] 새 키워드 "${keyword}" 삭제됨 (유효하지 않은 키워드)`);
           }
           
-          return res.status(400).json({ 
-            message: "조건에 맞는 업체가 없습니다. 다른 키워드를 사용해주세요." 
-          });
+          return sendError(res, 400, "조건에 맞는 업체가 없습니다. 다른 키워드를 사용해주세요.");
         }
         
         logger.info(`[INFO] 키워드 "${keyword}" 유효성 확인 완료 (${items.length}개 항목 발견)`);
@@ -859,9 +888,7 @@ export const addUserKeywordHandler = async (req, res) => {
           logger.info(`[INFO] 새 키워드 "${keyword}" 삭제됨 (크롤링 오류)`);
         }
         
-        return res.status(500).json({ 
-          message: "키워드 유효성 확인 중 오류가 발생했습니다. 다시 시도해주세요." 
-        });
+        return sendError(res, 500, "키워드 유효성 확인 중 오류가 발생했습니다. 다시 시도해주세요.");
       }
     } else if (!keywordRecord.last_search_volume) {
       // 기존 키워드지만 검색량 정보가 없는 경우 업데이트
@@ -885,18 +912,19 @@ export const addUserKeywordHandler = async (req, res) => {
     }
 
     // 4. UserPlaceKeyword 테이블 연동
-    const [userKeywordRelation, relationCreated] = await UserPlaceKeyword.findOrCreate({
-      where: { user_id: userId, place_id: placeId, keyword_id: keywordRecord.id },
-      defaults: { user_id: userId, place_id: placeId, keyword_id: keywordRecord.id },
-    });
+    const [userKeywordRelation, relationCreated] = await handleDbOperation(async () => {
+      return await UserPlaceKeyword.findOrCreate({
+        where: { user_id: userId, place_id: placeId, keyword_id: keywordRecord.id },
+        defaults: { user_id: userId, place_id: placeId, keyword_id: keywordRecord.id },
+      });
+    }, "사용자-장소-키워드 연결");
 
     if (!relationCreated) {
       // 이미 존재하는 경우
       logger.info(`[INFO] 사용자 ${userId}의 업체 ${placeId}에 키워드 "${keyword}"가 이미 연결되어 있습니다.`);
     }
 
-    res.status(201).json({ 
-      message: "키워드가 성공적으로 추가되었습니다.",
+    return sendSuccess(res, {
       keyword: {
         id: keywordRecord.id,
         keyword: keywordRecord.keyword,
@@ -904,10 +932,9 @@ export const addUserKeywordHandler = async (req, res) => {
         search_volume: keywordRecord.last_search_volume, // 검색량 정보 추가
         relation_id: userKeywordRelation.id
       }
-    });
+    }, "키워드가 성공적으로 추가되었습니다.", 201);
   } catch (error) {
-    console.error("키워드 추가 중 오류 발생:", error);
-    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+    return sendError(res, 500, error.message);
   }
 };
 
@@ -916,26 +943,36 @@ export const changeUserKeywordHandler = async (req, res) => {
   try {
     const { userId, placeId, oldKeywordId, newKeyword } = req.body;
 
-    if (!userId || !placeId || !oldKeywordId || !newKeyword || !newKeyword.trim()) {
-      return res.status(400).json({ message: "필수 필드가 누락되었습니다." });
+    // Validate required fields
+    const validation = validateRequiredFields(req.body, ['userId', 'placeId', 'oldKeywordId', 'newKeyword']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
+    }
+
+    if (!newKeyword.trim()) {
+      return sendError(res, 400, "새 키워드가 비어있습니다.");
     }
 
     // 1. UserPlaceKeyword 테이블에서 기존 연결 찾기
-    const userKeyword = await UserPlaceKeyword.findOne({
-      where: {
-        user_id: userId,
-        place_id: placeId,
-        keyword_id: oldKeywordId
-      }
-    });
+    const userKeyword = await handleDbOperation(async () => {
+      return await UserPlaceKeyword.findOne({
+        where: {
+          user_id: userId,
+          place_id: placeId,
+          keyword_id: oldKeywordId
+        }
+      });
+    }, "기존 키워드 연결 조회");
 
     if (!userKeyword) {
-      return res.status(404).json({ message: "해당 키워드 연결을 찾을 수 없습니다." });
+      return handleNotFound(res, "해당 키워드 연결을 찾을 수 없습니다.");
     }
 
     // 2. Keyword 테이블에서 새 키워드 찾기
     const trimmedKeyword = newKeyword.trim();
-    let newKeywordRecord = await Keyword.findOne({ where: { keyword: trimmedKeyword } });
+    let newKeywordRecord = await handleDbOperation(async () => {
+      return await Keyword.findOne({ where: { keyword: trimmedKeyword } });
+    }, "새 키워드 조회");
     let created = false;
 
     // 3. 키워드가 없는 경우 검색량 조회 후 isRestaurant 판별
@@ -960,18 +997,22 @@ export const changeUserKeywordHandler = async (req, res) => {
       await checkIsRestaurantByDOM(trimmedKeyword);
       
       // 3-3. checkIsRestaurantByDOM은 내부적으로 키워드를 생성하므로 다시 조회
-      newKeywordRecord = await Keyword.findOne({ where: { keyword: trimmedKeyword } });
+      newKeywordRecord = await handleDbOperation(async () => {
+        return await Keyword.findOne({ where: { keyword: trimmedKeyword } });
+      }, "새 키워드 재조회");
       
       if (!newKeywordRecord) {
-        return res.status(500).json({ message: "키워드 생성 중 오류가 발생했습니다." });
+        return sendError(res, 500, "키워드 생성 중 오류가 발생했습니다.");
       }
       
       // 3-4. 검색량 정보 업데이트
       if (searchVolume > 0) {
-        await newKeywordRecord.update({
-          last_search_volume: searchVolume,
-          monthlySearchVolume: searchVolume
-        });
+        await handleDbOperation(async () => {
+          return await newKeywordRecord.update({
+            last_search_volume: searchVolume,
+            monthlySearchVolume: searchVolume
+          });
+        }, "새 키워드 검색량 업데이트");
         logger.info(`[INFO] 새 키워드 "${trimmedKeyword}" 검색량(${searchVolume}) 저장 완료`);
       }
       
@@ -985,10 +1026,12 @@ export const changeUserKeywordHandler = async (req, res) => {
         if (searchVolumeResults && searchVolumeResults.length > 0) {
           const searchVolume = searchVolumeResults[0].monthlySearchVolume || 0;
           // 검색량 정보 업데이트
-          await newKeywordRecord.update({
-            last_search_volume: searchVolume,
-            monthlySearchVolume: searchVolume
-          });
+          await handleDbOperation(async () => {
+            return await newKeywordRecord.update({
+              last_search_volume: searchVolume,
+              monthlySearchVolume: searchVolume
+            });
+          }, "기존 키워드 검색량 업데이트");
           logger.info(`[INFO] 기존 키워드 "${trimmedKeyword}" 검색량(${searchVolume}) 업데이트 완료`);
         }
       } catch (searchVolumeError) {
@@ -1012,13 +1055,13 @@ export const changeUserKeywordHandler = async (req, res) => {
           
           // 새로 생성된 키워드 레코드 삭제 (관련 데이터 정리)
           if (newKeywordRecord) {
-            await newKeywordRecord.destroy();
+            await handleDbOperation(async () => {
+              return await newKeywordRecord.destroy();
+            }, "유효하지 않은 키워드 삭제");
             logger.info(`[INFO] 새 키워드 "${trimmedKeyword}" 삭제됨 (유효하지 않은 키워드)`);
           }
           
-          return res.status(400).json({ 
-            message: "조건에 맞는 업체가 없습니다. 다른 키워드를 사용해주세요." 
-          });
+          return sendError(res, 400, "조건에 맞는 업체가 없습니다. 다른 키워드를 사용해주세요.");
         }
         
         logger.info(`[INFO] 키워드 "${trimmedKeyword}" 유효성 확인 완료 (${items.length}개 항목 발견)`);
@@ -1027,36 +1070,42 @@ export const changeUserKeywordHandler = async (req, res) => {
         
         // 크롤링 오류 발생 시 새 키워드 삭제하고 오류 반환
         if (newKeywordRecord) {
-          await newKeywordRecord.destroy();
+          await handleDbOperation(async () => {
+            return await newKeywordRecord.destroy();
+          }, "크롤링 오류로 인한 키워드 삭제");
           logger.info(`[INFO] 새 키워드 "${trimmedKeyword}" 삭제됨 (크롤링 오류)`);
         }
         
-        return res.status(500).json({ 
-          message: "키워드 유효성 확인 중 오류가 발생했습니다. 다시 시도해주세요." 
-        });
+        return sendError(res, 500, "키워드 유효성 확인 중 오류가 발생했습니다. 다시 시도해주세요.");
       }
     }
 
     // 5. UserPlaceKeyword 테이블에서 새 키워드로 이미 연결이 있는지 확인
-    const existingRelation = await UserPlaceKeyword.findOne({
-      where: {
-        user_id: userId,
-        place_id: placeId,
-        keyword_id: newKeywordRecord.id
-      }
-    });
+    const existingRelation = await handleDbOperation(async () => {
+      return await UserPlaceKeyword.findOne({
+        where: {
+          user_id: userId,
+          place_id: placeId,
+          keyword_id: newKeywordRecord.id
+        }
+      });
+    }, "기존 연결 확인");
 
     // 6. 기존 연결 삭제
-    await userKeyword.destroy();
+    await handleDbOperation(async () => {
+      return await userKeyword.destroy();
+    }, "기존 연결 삭제");
 
     // 7. 새 연결이 없는 경우에만 생성 (중복 방지)
     let userKeywordRelation;
     if (!existingRelation) {
-      userKeywordRelation = await UserPlaceKeyword.create({
-        user_id: userId,
-        place_id: placeId,
-        keyword_id: newKeywordRecord.id
-      });
+      userKeywordRelation = await handleDbOperation(async () => {
+        return await UserPlaceKeyword.create({
+          user_id: userId,
+          place_id: placeId,
+          keyword_id: newKeywordRecord.id
+        });
+      }, "새 키워드 연결 생성");
     } else {
       userKeywordRelation = existingRelation;
     }
@@ -1067,8 +1116,7 @@ export const changeUserKeywordHandler = async (req, res) => {
       // Detail 크롤링은 이미 Basic 크롤링 내부에서 처리되었음
     }
 
-    res.status(200).json({ 
-      message: "키워드가 성공적으로 변경되었습니다.",
+    return sendSuccess(res, {
       keyword: {
         id: newKeywordRecord.id,
         keyword: newKeywordRecord.keyword,
@@ -1076,10 +1124,9 @@ export const changeUserKeywordHandler = async (req, res) => {
         isRestaurant: newKeywordRecord.isRestaurant,
         search_volume: newKeywordRecord.last_search_volume // 검색량 정보 추가
       }
-    });
+    }, "키워드가 성공적으로 변경되었습니다.");
   } catch (error) {
-    console.error("키워드 변경 중 오류 발생:", error);
-    res.status(500).json({ message: "서버 오류가 발생했습니다." });
+    return sendError(res, 500, error.message);
   }
 };
 
@@ -1093,25 +1140,23 @@ export async function getKeywordStatusHandler(req, res) {
     const { keyword } = req.query;
     
     if (!keywordId && !keyword) {
-      return res.status(400).json({
-        success: false,
-        message: "키워드 ID나 키워드명이 필요합니다."
-      });
+      return sendError(res, 400, "키워드 ID나 키워드명이 필요합니다.");
     }
     
     // 키워드 검색 (ID 또는 이름으로)
     let keywordRecord;
     if (keywordId) {
-      keywordRecord = await Keyword.findByPk(keywordId);
+      keywordRecord = await handleDbOperation(async () => {
+        return await Keyword.findByPk(keywordId);
+      }, "키워드 ID로 조회");
     } else if (keyword) {
-      keywordRecord = await Keyword.findOne({ where: { keyword } });
+      keywordRecord = await handleDbOperation(async () => {
+        return await Keyword.findOne({ where: { keyword } });
+      }, "키워드명으로 조회");
     }
     
     if (!keywordRecord) {
-      return res.status(404).json({
-        success: false,
-        message: "키워드를 찾을 수 없습니다."
-      });
+      return handleNotFound(res, "키워드를 찾을 수 없습니다.");
     }
     
     // 키워드 기본 크롤링 상태 확인
@@ -1119,9 +1164,11 @@ export async function getKeywordStatusHandler(req, res) {
     const lastCrawledDate = keywordRecord.basic_last_crawled_date;
     
     // 크롤링된 항목 수 가져오기
-    const crawledItemsCount = await KeywordBasicCrawlResult.count({
-      where: { keyword_id: keywordRecord.id }
-    });
+    const crawledItemsCount = await handleDbOperation(async () => {
+      return await KeywordBasicCrawlResult.count({
+        where: { keyword_id: keywordRecord.id }
+      });
+    }, "크롤링 항목 수 조회");
     
     // 응답 준비
     const currentTime = new Date();
@@ -1148,24 +1195,17 @@ export async function getKeywordStatusHandler(req, res) {
       status = "completed";
     }
     
-    return res.json({
-      success: true,
-      data: {
-        keyword: keywordRecord.keyword,
-        isRestaurant: keywordRecord.isRestaurant,
-        status,
-        lastCrawled: lastCrawledDate,
-        timeAgo,
-        crawledItemsCount,
-        monthlySearchVolume: keywordRecord.monthlySearchVolume
-      }
+    return sendSuccess(res, {
+      keyword: keywordRecord.keyword,
+      isRestaurant: keywordRecord.isRestaurant,
+      status,
+      lastCrawled: lastCrawledDate,
+      timeAgo,
+      crawledItemsCount,
+      monthlySearchVolume: keywordRecord.monthlySearchVolume
     });
   } catch (err) {
-    logger.error("[ERROR] getKeywordStatusHandler:", err);
-    return res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -1180,43 +1220,48 @@ export async function getMainKeywordStatusHandler(req, res) {
     
     if (selectedPlaceId) {
       // 요청된 place_id가 유효한지 확인
-      const validUserPlace = await UserPlaceKeyword.findOne({ 
-        where: { user_id: userId, place_id: selectedPlaceId } 
-      });
+      const validUserPlace = await handleDbOperation(async () => {
+        return await UserPlaceKeyword.findOne({ 
+          where: { user_id: userId, place_id: selectedPlaceId } 
+        });
+      }, "사용자 업체 유효성 확인");
       
       if (!validUserPlace) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'This place does not belong to the user' 
-        });
+        return handleNotFound(res, 'This place does not belong to the user');
       }
       
       placeId = selectedPlaceId;
       logger.info(`[INFO] getMainKeywordStatusHandler: Using requested place_id=${placeId}`);
     } else {
       // 기존 로직: 첫 번째 업체 사용
-      const userPlace = await UserPlaceKeyword.findOne({ where: { user_id: userId } });
-      if (!userPlace) return res.status(404).json({ success: false, message: 'No place found for user' });
+      const userPlace = await handleDbOperation(async () => {
+        return await UserPlaceKeyword.findOne({ where: { user_id: userId } });
+      }, "사용자 첫 번째 업체 조회");
+      if (!userPlace) return handleNotFound(res, 'No place found for user');
       placeId = userPlace.place_id;
       logger.info(`[INFO] getMainKeywordStatusHandler: Using first place_id=${placeId}`);
     }
     
     // 해당 place_id에 연결된 모든 키워드 조회
-    const userKeywords = await UserPlaceKeyword.findAll({ 
-      where: { user_id: userId, place_id: placeId }
-    });
+    const userKeywords = await handleDbOperation(async () => {
+      return await UserPlaceKeyword.findAll({ 
+        where: { user_id: userId, place_id: placeId }
+      });
+    }, "사용자 키워드 목록 조회");
     
-    if (!userKeywords.length) return res.status(404).json({ success: false, message: 'No keywords found' });
+    if (!userKeywords.length) return handleNotFound(res, 'No keywords found');
     
     // 키워드 ID 목록 추출
     const keywordIds = userKeywords.map(uk => uk.keyword_id);
     
     // 해당 키워드들 직접 조회
-    const keywords = await Keyword.findAll({
-      where: { id: keywordIds }
-    });
+    const keywords = await handleDbOperation(async () => {
+      return await Keyword.findAll({
+        where: { id: keywordIds }
+      });
+    }, "키워드 상세 정보 조회");
     
-    if (!keywords.length) return res.status(404).json({ success: false, message: 'No keywords found' });
+    if (!keywords.length) return handleNotFound(res, 'No keywords found');
     
     // Determine main keyword by highest last_search_volume
     const mainKeyword = keywords.sort((a,b) => (b.last_search_volume || 0) - (a.last_search_volume || 0))[0];
@@ -1253,16 +1298,18 @@ export async function getMainKeywordStatusHandler(req, res) {
     
     // 각 날짜별 최신 크롤링 결과 조회
     const getLatestResult = async (dateRange) => {
-      return await KeywordBasicCrawlResult.findOne({ 
-        where: { 
-          keyword_id: keywordId, 
-          place_id: placeId,
-          last_crawled_at: {
-            [Op.between]: [dateRange.start, dateRange.end]
-          }
-        },
-        order: [['last_crawled_at', 'DESC']]
-      });
+      return await handleDbOperation(async () => {
+        return await KeywordBasicCrawlResult.findOne({ 
+          where: { 
+            keyword_id: keywordId, 
+            place_id: placeId,
+            last_crawled_at: {
+              [Op.between]: [dateRange.start, dateRange.end]
+            }
+          },
+          order: [['last_crawled_at', 'DESC']]
+        });
+      }, `크롤링 결과 조회 (${dateRange.start.toDateString()})`);
     };
     
     // 날짜별 결과 조회
@@ -1300,10 +1347,9 @@ export async function getMainKeywordStatusHandler(req, res) {
     // 사용된 데이터 로깅
     logger.info(`[INFO] 업체 ${placeId} 키워드 "${keywordText}" 순위 정보 - 현재: ${currentRank}, 이전: ${prevRank}, 변화: ${diff}`);
     
-    return res.json({ success: true, data: { keyword: keywordText, currentRank, diff } });
+    return sendSuccess(res, { keyword: keywordText, currentRank, diff });
   } catch(err) {
-    console.error('[ERROR] getMainKeywordStatusHandler:', err);
-    return res.status(500).json({ success: false, message: err.message });
+    return sendError(res, 500, err.message);
   }
 }
 
@@ -1312,24 +1358,22 @@ export async function getKeywordRankingsByBusinessHandler(req, res) {
   try {
     const { userId } = req.query;
     
-    if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: "사용자 ID가 필요합니다."
-      });
+    // Validate required fields
+    const validation = validateRequiredFields(req.query, ['userId']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
     }
     
     // 1. 사용자의 모든 업체 조회
-    const places = await Place.findAll({
-      where: { user_id: userId },
-      attributes: ['place_id', 'place_name', 'category']
-    });
+    const places = await handleDbOperation(async () => {
+      return await Place.findAll({
+        where: { user_id: userId },
+        attributes: ['place_id', 'place_name', 'category']
+      });
+    }, "사용자 업체 목록 조회");
     
     if (!places || places.length === 0) {
-      return res.json({
-        success: true,
-        data: {}
-      });
+      return sendSuccess(res, {});
     }
     
     // 2. 각 업체별로 등록된 키워드와 해당 순위 정보 수집
@@ -1339,12 +1383,14 @@ export async function getKeywordRankingsByBusinessHandler(req, res) {
       const placeId = place.place_id;
       
       // 해당 업체에 연결된 키워드 조회
-      const userPlaceKeywords = await UserPlaceKeyword.findAll({
-        where: { user_id: userId, place_id: placeId },
-        include: [
-          { model: Keyword, attributes: ['id', 'keyword'] }
-        ]
-      });
+      const userPlaceKeywords = await handleDbOperation(async () => {
+        return await UserPlaceKeyword.findAll({
+          where: { user_id: userId, place_id: placeId },
+          include: [
+            { model: Keyword, attributes: ['id', 'keyword'] }
+          ]
+        });
+      }, `업체 ${placeId} 키워드 조회`);
       
       if (!userPlaceKeywords || userPlaceKeywords.length === 0) {
         // 등록된 키워드가 없는 경우 빈 배열로 설정
@@ -1361,17 +1407,21 @@ export async function getKeywordRankingsByBusinessHandler(req, res) {
           // Keyword가 null인 경우 처리
           if (!upk.Keyword) {
             // Keyword 직접 조회
-            const keywordRecord = await Keyword.findByPk(keywordId);
+            const keywordRecord = await handleDbOperation(async () => {
+              return await Keyword.findByPk(keywordId);
+            }, `키워드 ${keywordId} 직접 조회`);
             const keyword = keywordRecord ? keywordRecord.keyword : `키워드 ID: ${keywordId}`;
             
             // 해당 키워드의 최신 크롤링 결과 조회
-            const latestResult = await KeywordBasicCrawlResult.findOne({
-              where: { 
-                keyword_id: keywordId,
-                place_id: placeId
-              },
-              order: [['last_crawled_at', 'DESC']]
-            });
+            const latestResult = await handleDbOperation(async () => {
+              return await KeywordBasicCrawlResult.findOne({
+                where: { 
+                  keyword_id: keywordId,
+                  place_id: placeId
+                },
+                order: [['last_crawled_at', 'DESC']]
+              });
+            }, `키워드 ${keywordId} 크롤링 결과 조회`);
             
             return {
               keyword,
@@ -1382,13 +1432,15 @@ export async function getKeywordRankingsByBusinessHandler(req, res) {
           const keyword = upk.Keyword.keyword;
           
           // 해당 키워드의 최신 크롤링 결과 조회
-          const latestResult = await KeywordBasicCrawlResult.findOne({
-            where: { 
-              keyword_id: keywordId,
-              place_id: placeId
-            },
-            order: [['last_crawled_at', 'DESC']]
-          });
+          const latestResult = await handleDbOperation(async () => {
+            return await KeywordBasicCrawlResult.findOne({
+              where: { 
+                keyword_id: keywordId,
+                place_id: placeId
+              },
+              order: [['last_crawled_at', 'DESC']]
+            });
+          }, `키워드 ${keyword} 크롤링 결과 조회`);
           
           return {
             keyword,
@@ -1405,16 +1457,52 @@ export async function getKeywordRankingsByBusinessHandler(req, res) {
       };
     }
     
-    return res.json({
-      success: true,
-      data: result
-    });
+    return sendSuccess(res, result);
     
   } catch (err) {
-    logger.error("[ERROR] getKeywordRankingsByBusinessHandler:", err);
-    return res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    return sendError(res, 500, err.message);
+  }
+}
+
+/**
+ * GET /keyword/history?placeId=&keywordId=&days=
+ */
+export async function getKeywordHistoryHandler(req, res) {
+  try {
+    const { placeId, keywordId, days } = req.query;
+    const daysInt = parseInt(days, 10);
+    
+    // Validate required fields
+    const validation = validateRequiredFields(req.query, ['placeId', 'keywordId', 'days']);
+    if (validation) {
+      return sendError(res, 400, validation.message);
+    }
+    
+    if (isNaN(daysInt)) {
+      return sendError(res, 400, "잘못된 days 값입니다.");
+    }
+    
+    // fetch history from KeywordBasicCrawlResult model
+    const sinceDate = new Date(Date.now() - daysInt * 24 * 60 * 60 * 1000);
+    const results = await handleDbOperation(async () => {
+      return await KeywordBasicCrawlResult.findAll({
+        where: {
+          place_id: placeId,
+          keyword_id: keywordId,
+          last_crawled_at: { [Op.gte]: sinceDate }
+        },
+        order: [["last_crawled_at", "ASC"]]
+      });
+    }, "키워드 히스토리 조회");
+    
+    // map to ChartDataItem shape
+    const data = results.map(r => ({
+      x: r.last_crawled_at,
+      y: r.ranking
+    }));
+    
+    return sendSuccess(res, data);
+  } catch (err) {
+    return sendError(res, 500, err.message);
   }
 }
