@@ -9,7 +9,7 @@ import authController, { issueTokens } from '../controllers/authController.js';
 // Utils & Middleware
 import createLogger from '../lib/logger.js';
 import { authenticateJWT, asyncHandler } from '../middlewares/auth.js';
-import { sendSuccess, sendError } from '../lib/response.js';
+import { sendSuccess, sendError } from '../lib/response.js'; // sendSuccess, sendError 사용
 const router = express.Router();
 const logger = createLogger('authRoutes');
 
@@ -37,37 +37,26 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
     logger.debug('/login 요청 수신');
-    passport.authenticate('local', { session: false }, async (err, user, info) => {
-      if (err) return next(err);
-      if (!user) {
-        return sendError(res, 401, info?.message || 'Auth Failed');
-      }
-
-      try {
-        // 토큰 발급
-        const tokens = await issueTokens(user.id);
-
-        // (1) RefreshToken -> HttpOnly 쿠키
-        res.cookie('refreshToken', tokens.refreshToken, {
+    try {
+      const result = await authController.checkEmailAndPassword(req);
+      if (result.refreshToken) {
+        res.cookie('refreshToken', result.refreshToken, {
           httpOnly: true,
           secure: getSecureCookieSetting(),
           sameSite: 'none',
           path: '/',
         });
-        // (2) AccessToken -> HttpOnly 쿠키 (for SSR token retrieval)
-        res.cookie('token', tokens.accessToken, {
+        res.cookie('token', result.data.accessToken, {
           httpOnly: true,
           secure: getSecureCookieSetting(),
           sameSite: 'none',
           path: '/',
         });
-        // (3) 로그인 성공 응답
-        return sendSuccess(res, {}, '로그인 성공!');
-      } catch (error) {
-        logger.error('issueTokens 오류:', error);
-        return sendError(res, 500, '토큰 발급 실패');
       }
-    })(req, res, next);
+      return sendSuccess(res, { accessToken: result.data.accessToken, user: result.data.user }, result.message);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
   })
 );
 
@@ -82,53 +71,42 @@ router.get(
 
 router.get('/google/callback', (req, res, next) => {
   logger.debug('Google OAuth 콜백 요청 수신');
-  passport.authenticate('google', { session: false }, async (err, user, info) => {
+  passport.authenticate('google', { session: false, failureRedirect: `${getFrontendUrl()}/login?error=google_auth_failed` }, async (err, user, info) => {
     if (err) {
       logger.error('Google OAuth 콜백 에러:', err);
-      return next(err);
+      return sendError(res, 500, 'Google OAuth 처리 중 에러 발생');
     }
 
-    // 인증 실패 시
+    const frontendUrl = getFrontendUrl();
     if (!user) {
-      // 이메일 중복 등 특정 케이스라면 프론트로 리다이렉트
       if (info && info.message === 'EMAIL_CONFLICT') {
         const { email, googleId } = info;
-        const frontendUrl = getFrontendUrl();
         return res.redirect(
           `${frontendUrl}/link-accounts?email=${encodeURIComponent(email)}&googleSub=${encodeURIComponent(googleId)}&provider=google`
         );
       } else {
-        return sendError(res, 400, info?.message || '구글 로그인 실패');
+        return res.redirect(`${frontendUrl}/login?error=${encodeURIComponent(info?.message || '구글 로그인 실패')}`);
       }
     }
 
-    // 구글 인증 성공
     if (!user.is_completed) {
-      // 추가정보 필요 페이지로
-      const frontendUrl = getFrontendUrl();
       return res.redirect(
         `${frontendUrl}/add-info?email=${encodeURIComponent(user.email)}&provider=google`
       );
     } else {
-      // (1) 가입완료 → 토큰 발급
       try {
         const tokens = await issueTokens(user.id);
-        // (2) refreshToken을 쿠키로
         res.cookie('refreshToken', tokens.refreshToken, {
           httpOnly: true,
           secure: getSecureCookieSetting(),
           sameSite: 'none',
           path: '/',
         });
-        
-        // (3) accessToken은 쿼리파람으로 넘겨주고, 프론트에서 localStorage에 저장 가능
-        const frontendUrl = getFrontendUrl();
         return res.redirect(
           `${frontendUrl}/oauth-redirect?accessToken=${tokens.accessToken}`
         );
       } catch (error) {
         logger.error('Google OAuth issueTokens 오류:', error);
-        const frontendUrl = getFrontendUrl();
         return res.redirect(`${frontendUrl}/login?error=token_issue`);
       }
     }
@@ -146,30 +124,29 @@ router.get(
 
 router.get("/kakao/callback", (req, res, next) => {
   logger.debug('Kakao OAuth 콜백 요청 수신');
-  passport.authenticate("kakao", { session: false }, async (err, user, info) => {
-    if (err) return next(err);
+  passport.authenticate("kakao", { session: false, failureRedirect: `${getFrontendUrl()}/login?error=kakao_auth_failed` }, async (err, user, info) => {
+    if (err) {
+        logger.error('Kakao OAuth 콜백 에러:', err);
+        return sendError(res, 500, 'Kakao OAuth 처리 중 에러 발생');
+    }
+    const frontendUrl = getFrontendUrl();
 
     if (!user) {
-      // message: EMAIL_CONFLICT_LOCAL => 로컬 계정과 충돌
       if (info && info.message === "EMAIL_CONFLICT_LOCAL") {
         const { email, kakaoId } = info;
-        const frontendUrl = getFrontendUrl();
         return res.redirect(
           `${frontendUrl}/link-accounts?email=${encodeURIComponent(email)}&provider=kakao&providerId=${encodeURIComponent(kakaoId)}&mode=localLink`
         );
       } 
-      // message: EMAIL_IN_USE_SOCIAL => 소셜 vs 소셜
       else if (info && info.message === "EMAIL_IN_USE_SOCIAL") {
-        return sendError(res, 400, '이미 소셜로 가입된 이메일 - 가입 불가');
+        return res.redirect(`${frontendUrl}/login?error=social_email_in_use`);
       } 
       else {
-        return sendError(res, 400, info?.message || '카카오 로그인 실패');
+        return res.redirect(`${frontendUrl}/login?error=${encodeURIComponent(info?.message || '카카오 로그인 실패')}`);
       }
     }
 
-    // 이미 (provider='kakao', provider_id=kakaoId)로 가입된 유저 or 새로 생성된 유저
     if (!user.is_completed) {
-      const frontendUrl = getFrontendUrl();
       return res.redirect(
         `${frontendUrl}/add-info?email=${encodeURIComponent(user.email)}&provider=kakao`
       );
@@ -182,13 +159,11 @@ router.get("/kakao/callback", (req, res, next) => {
           sameSite: "none",
           path: '/',
         });
-        const frontendUrl = getFrontendUrl();
         return res.redirect(
           `${frontendUrl}/oauth-redirect?accessToken=${tokens.accessToken}`
         );
       } catch (error) {
         logger.error('Kakao OAuth issueTokens 오류:', error);
-        const frontendUrl = getFrontendUrl();
         return res.redirect(`${frontendUrl}/login?error=token_issue`);
       }
     }
@@ -200,46 +175,154 @@ router.post(
   '/signup',
   body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
   body('password').notEmpty().withMessage('비밀번호가 필요합니다.'),
-  asyncHandler(authController.signup)
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    try {
+      const result = await authController.signup(req);
+      if (result.refreshToken) {
+        res.cookie('refreshToken', result.refreshToken, {
+          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
+        });
+      }
+      return sendSuccess(res, result.data, result.message);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 router.post(
   '/verify',
   body('token').notEmpty().withMessage('검증 토큰이 필요합니다.'),
-  asyncHandler(authController.verify)
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    try {
+      const result = await authController.verify(req);
+      return sendSuccess(res, result.data, result.message);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 router.post(
   '/check-email',
   body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
-  asyncHandler(authController.checkEmail)
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    try {
+      const result = await authController.checkEmail(req);
+      return sendSuccess(res, result.data);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 router.post(
   '/check-email-and-password',
   body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
   body('password').notEmpty().withMessage('비밀번호가 필요합니다.'),
-  asyncHandler(authController.checkEmailAndPassword)
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    try {
+      const result = await authController.checkEmailAndPassword(req);
+      if (result.refreshToken) {
+        res.cookie('refreshToken', result.refreshToken, {
+          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
+        });
+      }
+      return sendSuccess(res, result.data, result.message);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 router.post(
   '/link-accounts',
   body('email').isEmail().withMessage('유효한 이메일이 필요합니다.'),
   body('provider').notEmpty().withMessage('provider가 필요합니다.'),
-  asyncHandler(authController.linkAccounts)
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    try {
+      const result = await authController.linkAccounts(req);
+      if (result.refreshToken) {
+        res.cookie('refreshToken', result.refreshToken, {
+          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
+        });
+      }
+      return sendSuccess(res, result.data, result.message);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 router.post(
   '/addinfo',
   authenticateJWT,
   body('userInfo').notEmpty().withMessage('추가 정보가 필요합니다.'),
-  asyncHandler(authController.addInfo)
+  asyncHandler(async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    try {
+      const result = await authController.addInfo(req);
+      if (result.refreshToken) {
+        res.cookie('refreshToken', result.refreshToken, {
+          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
+        });
+      }
+      return sendSuccess(res, result.data, result.message);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 router.post(
-  '/refresh',
-  authenticateJWT,
-  asyncHandler(authController.refresh)
+  '/refresh', // authenticateJWT 제거
+  asyncHandler(async (req, res, next) => {
+    try {
+      const result = await authController.refresh(req);
+      if (result.data && result.data.refreshToken) {
+         res.cookie('refreshToken', result.data.refreshToken, {
+            httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
+        });
+      }
+      // result.data가 이미 { accessToken, refreshToken } 형태이므로 직접 전달
+      return sendSuccess(res, result.data);
+    } catch (error) {
+      return sendError(res, error.statusCode || 401, error.message); // Refresh 실패는 보통 401
+    }
+  })
 );
 // 로그아웃 라우트 (토큰 제거)
 router.post(
   '/logout',
   authenticateJWT,
-  asyncHandler(authController.logout)
+  asyncHandler(async (req, res, next) => {
+    try {
+      const result = await authController.logout(req);
+      if (result.clearCookies) {
+        result.clearCookies.forEach(cookie => {
+          const cookieOptions = {
+             httpOnly: true, 
+             secure: getSecureCookieSetting(), 
+             sameSite: "none", 
+             path: '/', 
+             ...cookie.options 
+            };
+          res.clearCookie(cookie.name, cookieOptions);
+        });
+      }
+      if (result.statusCode === 204) {
+        return res.status(204).send();
+      } 
+      return sendSuccess(res, null, result.message, result.statusCode);
+    } catch (error) {
+      return sendError(res, error.statusCode || 500, error.message);
+    }
+  })
 );
 
 export default router;

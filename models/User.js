@@ -109,6 +109,18 @@ class User extends Model {
   }
 
   /**
+   * (8-1) clearRefreshToken
+   * 로그아웃 시 refresh token 제거
+   */
+  static async clearRefreshToken(userId) {
+    const user = await User.findByPk(userId);
+    if (!user) return null;
+    user.refresh_token = null;
+    await user.save();
+    return user;
+  }
+
+  /**
    * (9) updateUrlRegistration
    * url_registration 컬럼을 1로 업데이트
    */

@@ -10,7 +10,7 @@ import * as authService from '../services/authService.js';
 import { createControllerHelper } from '../utils/controllerHelpers.js';
 
 const logger = createLogger('AuthController');
-const { sendSuccess, sendError, handleDbOperation, validateRequiredFields } = createControllerHelper('AuthController');
+const { handleDbOperation, validateRequiredFields } = createControllerHelper('AuthController');
 
 // TODO: coolsms 모듈을 사용하여 문자 메시지 전송 마무리
 // ------------------------------------------------------------
@@ -42,21 +42,25 @@ export async function issueTokens(userId) {
 // ------------------------------------------------------------
 // [2] Refresh 요청
 // ------------------------------------------------------------
-export async function refresh(req, res, next) {
+export async function refresh(req) { // res, next 제거
   try {
     const token = req.cookies.refreshToken;
     
     if (!token) {
-      return sendError(res, 401, 'No refresh token');
+      const error = new Error('No refresh token');
+      error.statusCode = 401;
+      throw error;
     }
     
     const tokens = await handleDbOperation(async () => {
       return await authService.refreshTokens(token);
     }, "토큰 갱신");
     
-    return sendSuccess(res, tokens);
+    return { data: tokens }; // 데이터 반환
   } catch (err) {
-    next(err);
+    // next(err) 대신 에러 throw
+    if (!err.statusCode) logger.error('Refresh token error:', err); // 이미 statusCode가 있으면 authService에서 설정된 것
+    throw err;
   }
 }
 
@@ -69,70 +73,57 @@ const getSecureCookieSetting = () => !isDevelopment(); // 개발환경이 아닐
 // ------------------------------------------------------------
 // [3] 소셜 로그인 후 추가 정보 입력
 // ------------------------------------------------------------
-export async function addInfo(req, res) {
+export async function addInfo(req) { // res, next 제거
   try {
     const {
       email,
       name,
       phone,
       birthday8,
-      provider, // "local", "kakao", "google" ...
+      provider,
       agreeMarketingTerm,
     } = req.body;
 
-    console.log("[DEBUG] /addinfo, req.body =", req.body);
+    logger.debug("[DEBUG] /addinfo, req.body =", req.body);
 
-    // 1) DB에서 user 찾기
     const user = await User.findOne({ where: { email, provider } });
 
-    // 2) 유저가 정말 없으면 => 잘못된 플로우이므로 에러
     if (!user) {
-      return res
-        .status(404)
-        .json({ message: "유저가 존재하지 않습니다. (인증 or 임시가입이 안 된 상태)" });
+      const error = new Error("유저가 존재하지 않습니다. (인증 or 임시가입이 안 된 상태)");
+      error.statusCode = 404;
+      throw error;
     }
 
-    // 3) 추가 정보 업데이트
     user.name = name;
     user.phone = phone;
-    user.birthday8 = birthday8; // DB 컬럼에 맞게
+    user.birthday8 = birthday8;
     user.agree_marketing_term = agreeMarketingTerm ? 1 : 0;
-    user.is_completed = true; // 최종 가입 완료!
+    user.is_completed = true;
 
-    // =========== 랜덤 아바타 할당 로직 추가 ============
-    // public/avatars/1.png ~ 10.png 중 하나를 무작위 선택
-    const randomIndex = Math.floor(Math.random() * 10) + 1; // 1~10
+    const randomIndex = Math.floor(Math.random() * 10) + 1;
     user.avatar_url = `/avatars/${randomIndex}.png`;
-    // ===================================================
 
-    await user.save();
+    await handleDbOperation(async () => user.save(), "사용자 추가 정보 저장");
 
-    // 4) 자동 로그인 or 그냥 완료 응답
-    //    (A) 토큰 발급
     const tokens = await issueTokens(user.id);
 
-    //    (B) refreshToken -> 쿠키
-    res.cookie("refreshToken", tokens.refreshToken, {
-      httpOnly: true,
-      secure: getSecureCookieSetting(),
-      sameSite: "none",
-      path: '/',
-    });
-
-    // 환경에 따라 다른 리다이렉트 URL 사용
-    const baseUrl = isDevelopment() 
-      ? 'https://localhost:3000' 
-      : 'https://lakabe.com';
-      
-    //    (C) accessToken -> JSON
-    return res.json({
+    // redirectUrl 결정 로직은 라우터 또는 프론트엔드 설정에 따라 달라질 수 있으므로, 여기서는 필요한 정보만 반환
+    // const isDev = process.env.NODE_ENV === 'development';
+    // const baseUrl = isDev ? 'https://localhost:3000' : (process.env.FRONTEND_URL || 'https://lakabe.com');
+    
+    return { // 데이터 및 쿠키 설정용 토큰 반환
+      data: {
+        accessToken: tokens.accessToken,
+        // redirectUrl: `${baseUrl}/oauth-redirect?accessToken=${tokens.accessToken}` // 라우터에서 결정
+      },
       message: "가입 완료",
-      accessToken: tokens.accessToken,
-      redirectUrl: `${baseUrl}/oauth-redirect?accessToken=${tokens.accessToken}`,
-    });
+      refreshToken: tokens.refreshToken
+    };
   } catch (err) {
-    console.error("[ERROR] /addinfo:", err);
-    return res.status(500).json({ message: "서버 오류" });
+    logger.error("[ERROR] /addinfo:", err);
+    if (!err.statusCode) err.statusCode = 500;
+    if (!err.message) err.message = "서버 오류";
+    throw err;
   }
 }
 
@@ -140,111 +131,187 @@ export async function addInfo(req, res) {
 // ------------------------------------------------------------
 // [4] 회원가입 (Local Signup)
 // ------------------------------------------------------------
-export async function signup(req, res, next) {
+export async function signup(req) { // res, next 제거
   try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
-    const user = await authService.signupLocal(email, password);
-    return res.status(201).json(user);
+    const validation = validateRequiredFields(req.body, ['email', 'password']);
+    if (validation) {
+      const error = new Error(validation.message);
+      error.statusCode = 400;
+      throw error;
+    }
+    const user = await handleDbOperation(async () => {
+      return await authService.signupLocal(email, password);
+    }, "로컬 회원가입");
+    
+    const tokens = await issueTokens(user.id);
+
+    return { // 데이터 및 쿠키 설정용 토큰 반환
+      data: { user, accessToken: tokens.accessToken },
+      message: "회원가입 성공",
+      refreshToken: tokens.refreshToken
+    };
   } catch (err) {
-    next(err);
+    logger.error(`Signup error: ${err.message}`, err);
+    if (!err.statusCode) err.statusCode = 500; // authService에서 statusCode를 설정했을 수 있음
+    throw err;
   }
 }
 
 // ------------------------------------------------------------
 // [5] 이메일 인증
 // ------------------------------------------------------------
-export async function verify(req, res, next) {
+export async function verify(req) { // res, next 제거
   try {
     const { email, code } = req.body;
-    if (!email || !code) return res.status(400).json({ message: 'email and code required' });
-    await authService.verifyEmailCode(email, code);
-    return res.json({ verified: true });
+    const validation = validateRequiredFields(req.body, ['email', 'code']);
+    if (validation) {
+      const error = new Error(validation.message);
+      error.statusCode = 400;
+      throw error;
+    }
+    await handleDbOperation(async () => {
+      return await authService.verifyEmailCode(email, code);
+    }, "이메일 코드 인증");
+    return { data: { verified: true }, message: "이메일 인증 성공" };
   } catch (err) {
-    next(err);
+    logger.error(`Email verification error: ${err.message}`, err);
+    if (!err.statusCode) err.statusCode = 500;
+    throw err;
   }
 }
 
 // ------------------------------------------------------------
 // [6] 이메일 중복 체크
 // ------------------------------------------------------------
-export async function checkEmail(req, res) {
+export async function checkEmail(req) { // res, next 제거
   try {
     const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ message: '이메일을 입력하세요.' });
+    const validation = validateRequiredFields(req.body, ['email']);
+    if (validation) {
+      const error = new Error(validation.message);
+      error.statusCode = 400;
+      throw error;
     }
 
-    const available = await User.checkEmailAvailability(email);
-    return res.json({ available });
+    const available = await handleDbOperation(async () => {
+      return await User.checkEmailAvailability(email);
+    }, "이메일 중복 체크");
+    
+    return { data: { available } };
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: '서버 오류' });
+    logger.error(`Check email error: ${err.message}`, err);
+    if (!err.statusCode) err.statusCode = 500;
+    if (!err.message) err.message = '서버 오류';
+    throw err;
   }
 }
 // ------------------------------------------------------------
-// [7] 이메일/비밀번호 체크
+// [7] 이메일/비밀번호 체크 (로그인 핸들러로 사용 가능)
 // ------------------------------------------------------------
-export async function checkEmailAndPassword(req, res, next) {
+export async function checkEmailAndPassword(req) { // res, next 제거
   try {
     const { email, password } = req.body;
-    const user = await authService.checkEmailAndPassword(email, password);
-    return res.json({ message: '로그인 성공', user });
+    const validation = validateRequiredFields(req.body, ['email', 'password']);
+    if (validation) {
+      const error = new Error(validation.message);
+      error.statusCode = 400;
+      throw error;
+    }
+    const user = await handleDbOperation(async () => {
+      return await authService.checkEmailAndPassword(email, password);
+    }, "이메일/비밀번호 확인");
+
+    const tokens = await issueTokens(user.id);
+    
+    return { // 데이터 및 쿠키 설정용 토큰 반환
+      data: { user, accessToken: tokens.accessToken },
+      message: '로그인 성공',
+      refreshToken: tokens.refreshToken
+    };
   } catch (err) {
-    next(err);
+    logger.error(`Login error: ${err.message}`, err);
+    if (!err.statusCode) err.statusCode = 401; // 기본적으로 인증 실패로 처리
+    throw err;
   }
 }
 
 // ------------------------------------------------------------
 // [8] 계정 연동
 // ------------------------------------------------------------
-export async function linkAccounts(req, res) {
-  const { email, provider, providerId } = req.body;
-  if (!email || !provider || !providerId) {
-    return res
-      .status(400)
-      .json({ message: "email, provider, providerId가 필요합니다." });
-  }
-
+export async function linkAccounts(req) { // res, next 제거
   try {
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-      return res.status(404).json({ message: "유저 없음" });
+    const { email, provider, providerId } = req.body;
+    const validation = validateRequiredFields(req.body, ['email', 'provider', 'providerId']);
+    if (validation) {
+      const error = new Error(validation.message);
+      error.statusCode = 400;
+      throw error;
     }
 
-    user.provider = provider;
-    user.provider_id = providerId;
-    await user.save();
-    // Ensure tokens are awaited properly
+    const user = await handleDbOperation(async () => {
+      const u = await User.findOne({ where: { email } });
+      if (!u) {
+        const notFoundError = new Error('유저 없음');
+        notFoundError.statusCode = 404;
+        throw notFoundError;
+      }
+      u.provider = provider;
+      u.provider_id = providerId;
+      await u.save();
+      return u;
+    }, "계정 연동");
+
+    // User.findOne에서 못찾으면 위에서 throw 하므로, 이 시점엔 user가 있어야 함.
+    // if (!user) {
+    //   const error = new Error("유저 없음"); // 이 코드는 도달하지 않아야 함
+    //   error.statusCode = 404;
+    //   throw error;
+    // }
+
     const tokens = await issueTokens(user.id);
 
-    // set-cookie refresh
-    res.cookie("refreshToken", tokens.refreshToken, {
-      httpOnly: true,
-      secure: getSecureCookieSetting(),
-      sameSite: "none",
-      path: '/',
-    });
-    // json 응답으로 accessToken
-    return res.json({ message: "연동+로그인 완료", accessToken: tokens.accessToken });
+    return { // 데이터 및 쿠키 설정용 토큰 반환
+      data: { accessToken: tokens.accessToken },
+      message: "연동+로그인 완료",
+      refreshToken: tokens.refreshToken
+    };
   }
   catch (err) {
-    console.error("[ERROR] /linkAccounts:", err);
-    return res.status(500).json({ message: "서버 오류" });
+    logger.error("[ERROR] /linkAccounts:", err);
+    if (!err.statusCode) err.statusCode = 500;
+    if (!err.message) err.message = "서버 오류";
+    throw err;
   }
 }
 
 // ------------------------------------------------------------
 // [X] Logout: clear refresh token and cookie
 // ------------------------------------------------------------
-export async function logout(req, res, next) {
+export async function logout(req) { // res, next 제거
   try {
+    if (!req.user || !req.user.id) {
+      const error = new Error("사용자 ID를 찾을 수 없습니다.");
+      error.statusCode = 400;
+      throw error;
+    }
     const userId = req.user.id;
-    await authService.logoutUser(userId);
-    res.clearCookie('refreshToken');
-    return res.sendStatus(204);
+    
+    await handleDbOperation(async () => {
+      return await authService.logoutUser(userId);
+    }, "로그아웃");
+    
+    return { // 쿠키 제거를 위한 정보 반환 (실제 제거는 라우터에서)
+      message: "로그아웃 성공",
+      statusCode: 204, // No Content
+      clearCookies: [{ name: 'refreshToken', options: { httpOnly: true, secure: (process.env.NODE_ENV !== 'development'), sameSite: "none", path: '/' } }]
+      // getSecureCookieSetting()이 라우터에 있으므로, 라우터에서 옵션 설정
+    };
   } catch (err) {
-    next(err);
+    logger.error(`Logout error: ${err.message}`, err);
+    if (!err.statusCode) err.statusCode = 500;
+    if (!err.message) err.message = "로그아웃 실패";
+    throw err;
   }
 }
 
