@@ -4,11 +4,10 @@ import { Op } from 'sequelize';
 import Keyword from '../../models/Keyword.js';
 import PlaceDetailResult from '../../models/PlaceDetailResult.js';
 import '../../models/index.js'; // Sequelize 관계 로드
-import { crawlKeywordBasic, updateKeywordBasicCrawled } from './basicCrawlerService.js';
-import { randomDelay } from '../../config/crawler.js';
-import { createLogger } from '../../lib/logger.js';
 import { crawlDetail as detailCrawlerService} from './detailCrawlerService.js'; // Correct import path
+import { crawlKeywordBasic } from './basicCrawlerService.js'; // Added import for basic crawl
 import KeywordBasicCrawlResult from '../../models/KeywordBasicCrawlResult.js'; // Add missing import
+import { createLogger } from '../../lib/logger.js';
 
 const logger = createLogger('KeywordQueueLogger', { service: 'crawler' });
 
@@ -255,101 +254,68 @@ function groupCrawlSessionsByTime(results, timeThreshold) {
  * 4. 어제는 있었지만 오늘 누락된 장소 처리
  */
 async function processIncompleteDetailRows() {
+  logger.debug('[DEBUG][processIncompleteDetailRows] 불완전 데이터 처리 시작...');
+  let jobsAddedCount = 0;
+
   try {
+    // 1. basic_last_crawled_date가 14시 규칙에 따라 크롤링이 필요한 키워드 처리 (autoCheckAndAddBasicJobs가 담당)
+    // 여기서는 주로 Detail 정보가 불완전한 경우를 처리합니다.
+
+    // 2. 어제/오늘 결과 개수 차이가 큰 키워드의 재크롤링 (이 로직은 basic-crawl을 유발해야 함)
+    const keywordsForReBasicCrawl = await findKeywordsWithSignificantChangeByCrawls();
+    for (const keywordId of keywordsForReBasicCrawl) {
+      const kw = await Keyword.findByPk(keywordId);
+      if (kw) {
+        logger.info(`[INFO][processIncompleteDetailRows] 결과 개수 변화로 키워드 '${kw.keyword}' (ID: ${kw.id}) 'basic-crawl' 작업 추가`);
+        const coords = kw.preferences?.coordinates || { x: 126.9783882, y: 37.5666103 };
+        await keywordQueue.add('basic-crawl', {
+          keyword: kw.keyword,
+          keywordId: kw.id,
+          baseX: coords.x,
+          baseY: coords.y,
+          forceRecrawl: true // 변화 감지 시 재크롤링
+        });
+        jobsAddedCount++;
+      }
+    }
+
+    // 3. 불완전한 detail 정보를 가진 장소 처리 (PlaceDetailResult에서 last_crawled_at이 없거나 특정 필드가 null)
+    // 예: 오늘자 레코드 중 detail 정보가 없는 경우
     const now = new Date();
     const today14h = new Date(now);
     today14h.setHours(14, 0, 0, 0);
-    const startDate = now < today14h ? 
-      new Date(today14h.getTime() - 24 * 60 * 60 * 1000) : 
-      today14h;
+    const cycleStart = now >= today14h ? today14h : new Date(today14h.getTime() - 24 * 60 * 60 * 1000);
 
-    let tasksAdded = false;
-
-    // 1. basic_last_crawled_date 기준으로 크롤링이 필요한 키워드 검사
-    const pendingCount = await autoCheckAndAddBasicJobs();
-    logger.info(`[processIncompleteDetailRows] 기본 크롤링 필요 키워드: ${pendingCount}개`);
-    if (pendingCount > 0) {
-      tasksAdded = true;
-      logger.info('[processIncompleteDetailRows] 기본 크롤링 작업 등록 완료');
-    }
-
-    // 2. (제거) 결과 변동에 따른 재크롤 로직 삭제
-
-    // 3. 불완전한 detail 데이터를 배치로 반복 처리
-    let lastId = 0;
-    while (true) {
-      const batch = await PlaceDetailResult.findAll({
-        where: {
-          id: { [Op.gt]: lastId },
-          created_at: { [Op.gte]: startDate },  // 오늘 14:00 기준 이후에 생성된 레코드만 처리
-          [Op.or]: [
-            { blog_review_count: null },
-            { receipt_review_count: null },
-            { keywordList: null }
-          ]
-        },
-        order: [['id', 'ASC']],
-        limit: 500
-      });
-      if (batch.length === 0) break;
-      tasksAdded = true;
-      logger.info(`[processIncompleteDetailRows] 불완전한 detail 데이터 배치 처리: ${batch.length}개`);
-      for (const row of batch) {
-        await keywordQueue.add(
-          'unifiedProcess',
-          { type: 'detail', data: { placeId: row.place_id } },
-          { priority: 5, removeOnComplete: true }
-        );
-      }
-      // 다음 배치를 위해 마지막 ID 갱신
-      lastId = batch[batch.length - 1].id;
-    }
-    logger.info('[processIncompleteDetailRows] 불완전한 detail 데이터 반복 등록 완료');
-
-    // 4. 어제는 있었지만 오늘 누락된 장소 처리
-    const prevCycleStartDate = new Date(startDate.getTime() - 24 * 60 * 60 * 1000);
-    const prevCyclePlaceIds = await PlaceDetailResult.findAll({
-      attributes: ['place_id'],
-      where: { created_at: { [Op.gte]: prevCycleStartDate, [Op.lt]: startDate } },
-      group: ['place_id'],
-      raw: true
+    const incompletePlaces = await PlaceDetailResult.findAll({
+      where: {
+        created_at: { [Op.gte]: cycleStart }, // 오늘자 레코드
+        [Op.or]: [ // 상세 정보가 하나라도 없는 경우
+          { blog_review_count: null },
+          { receipt_review_count: null },
+        ],
+      },
+      attributes: ['place_id', 'id']
     });
-    const currentCyclePlaceIds = await PlaceDetailResult.findAll({
-      attributes: ['place_id'],
-      where: { created_at: { [Op.gte]: startDate } },
-      group: ['place_id'],
-      raw: true
-    });
-    const prevPlaceIdSet = new Set(prevCyclePlaceIds.map(row => row.place_id));
-    const currentPlaceIdSet = new Set(currentCyclePlaceIds.map(row => row.place_id));
-    const missingPlaceIds = [...prevPlaceIdSet].filter(id => !currentPlaceIdSet.has(id));
 
-    if (missingPlaceIds.length > 0) {
-      tasksAdded = true;
-      const placeIdsToProcess = missingPlaceIds.slice(0, 500);
-      logger.info(`[processIncompleteDetailRows] 누락된 장소 ${placeIdsToProcess.length}개 처리 시작 (전체 ${missingPlaceIds.length}개 중)`);
-      for (const placeId of placeIdsToProcess) {
-        await keywordQueue.add(
-          'unifiedProcess',
-          { type: 'detail', data: { placeId } },
-          { priority: 4, jobId: `missing_detail_${placeId}_${Date.now()}`, removeOnComplete: true }
-        );
-      }
-      logger.info(`[processIncompleteDetailRows] 누락된 장소 처리 작업 등록 완료`);
+    for (const place of incompletePlaces) {
+      logger.info(`[INFO][processIncompleteDetailRows] 불완전 상세 정보 장소 ${place.place_id} (PDR_id=${place.id}) 'detail-crawl' 작업 추가`);
+      await keywordQueue.add('detail-crawl', { placeId: place.place_id });
+      jobsAddedCount++;
     }
 
-    if (!tasksAdded) {
-      logger.info('[processIncompleteDetailRows] 처리할 작업이 없습니다. 모든 데이터가 완전합니다.');
+    // 4. 어제는 있었지만 오늘 누락된 장소 처리 (이 로직은 basic-crawl을 유발할 수 있음)
+    // 이 부분은 로직이 복잡하며, KeywordBasicCrawlResult 비교 등을 통해 누락된 placeId를 찾아
+    // 해당 placeId를 포함하는 키워드에 대해 basic-crawl을 다시 트리거하거나,
+    // 직접 detail-crawl을 시도할 수 있습니다. (요구사항에 따라 결정)
+
+    if (jobsAddedCount > 0) {
+      logger.info(`[INFO][processIncompleteDetailRows] 총 ${jobsAddedCount}개의 불완전 데이터 처리 작업 추가 완료.`);
+    } else {
+      logger.debug('[DEBUG][processIncompleteDetailRows] 추가할 불완전 데이터 처리 작업 없음.');
     }
 
-    lastActivityTimestamp = Date.now();
-    resetInactivityTimer();
-
-    return tasksAdded; // 작업 추가 여부 반환
-  } catch (err) {
-    logger.error(`[ERROR] 불완전/누락 레코드 처리 중 오류: ${err.message}`);
-    resetInactivityTimer();
-    return false;
+  } catch (error) {
+    logger.error(`[ERROR][processIncompleteDetailRows] 불완전 데이터 처리 중 오류: ${error.message}`, error);
   }
 }
 
@@ -365,6 +331,9 @@ export async function manuallyTriggerIncompleteRows() {
 // 서버 시작 시 타이머 초기화
 resetInactivityTimer();
 
+// 큐 비우기 (프로덕션에서도 시작 시 기존 작업 제거)
+await keywordQueue.empty().catch(err => logger.warn('[WARN] 큐 비우기 실패:', err));
+
 /* -----------------------------------------------------------------------------------
  * 실제 크롤링 로직: basic / detail 전부에서 사용
  * (batchSize 관련 로직 제거)
@@ -373,152 +342,82 @@ resetInactivityTimer();
 // (2) detail 크롤링 (placeId만 처리)
 async function processDetailCrawl({ placeId }) {
   if (!placeId) {
-    logger.error('[processDetailCrawl] placeId가 제공되지 않았습니다');
-    return;
+    logger.error('[ERROR][processDetailCrawl] placeId가 제공되지 않았습니다.');
+    throw new Error('placeId is required for detail crawl job');
   }
-
-  // 단일 place 처리
-  logger.info(`[processDetailCrawl] 단일 placeId=${placeId}`);
-  await detailCrawlerService({ placeId });
-  // await randomDelay(1, 1.4); // 딜레이 증가
-  await randomDelay(1.2, 1.6);
+  try {
+    logger.info(`[INFO][processDetailCrawl] placeId=${placeId} 상세 크롤링 시작`);
+    // detailCrawlerService.js의 crawlDetail 함수를 직접 호출
+    const result = await detailCrawlerService({ placeId }); // crawlDetail은 객체 { placeId } 를 인자로 받음
+    logger.info(`[INFO][processDetailCrawl] placeId=${placeId} 상세 크롤링 완료. Success: ${result.success}, Skipped: ${result.skipped}`);
+    return result;
+  } catch (error) {
+    logger.error(`[ERROR][processDetailCrawl] placeId=${placeId} 상세 크롤링 중 오류: ${error.message}`);
+    // 여기서 에러를 다시 throw하여 BullMQ가 재시도 등을 처리하도록 함
+    throw error;
+  }
 } 
 
 /* -----------------------------------------------------------------------------------
  * 큐 처리 로직 - 각각 다른 concurrency로 등록
  * ----------------------------------------------------------------------------------- */
 
-/** 
- * autoBasic: 동시성=10
- */
-keywordQueue.process('unifiedProcess', 10, async (job) => {
-  const { type, data } = job.data;
-  logger.info(`[unifiedProcess] 타입=${type} 작업 시작`);
-
+// Basic Crawl Processor: Concurrency 1
+keywordQueue.process('basic-crawl', 1, async (job) => {
+  const { keyword, keywordId, baseX, baseY, forceRecrawl } = job.data;
+  logger.info(`[INFO][basic-crawl] 작업 시작: jobId=${job.id}, keywordId=${keywordId}, keyword=${keyword}`);
   try {
-    switch (type) {
-      case 'basic':
-        // basic 작업 처리
-        const { keywordId, forceRecrawl } = data;
-        logger.info(`[basic] keywordId=${keywordId} 시작${forceRecrawl ? ' (강제 재크롤링)' : ''}`);
-        
-        // 1) 기본 크롤링 실행
-        const items = await crawlKeywordBasic(null, keywordId, 126.9783882, 37.5666103, forceRecrawl);
-        logger.info(`[basic] keywordId=${keywordId} 완료${forceRecrawl ? ' (강제 재크롤링)' : ''}`);
-        // 2) unstable 체크: forceRecrawl 아닐 때만
-        if (!forceRecrawl && Array.isArray(items)) {
-          // 기간 계산
-          const now = new Date();
-          const today14h = new Date(now); today14h.setHours(14,0,0,0);
-          const startDate = now < today14h ? new Date(today14h.getTime() - 24*60*60*1000) : today14h;
-          const prevStart = new Date(startDate.getTime() - 24*60*60*1000);
-          // 어제 개수 조회
-          const yesterdayCount = await KeywordBasicCrawlResult.count({
-            where: { keyword_id: keywordId, created_at: { [Op.gte]: prevStart, [Op.lt]: startDate } }
-          });
-          const todayCount = items.length;
-          // 재시도 조건: 오늘 < 어제 && 100단위
-          if (todayCount < yesterdayCount && todayCount % 100 === 0) {
-            logger.info(`[INFO] keywordId=${keywordId}: unstable (${todayCount}<${yesterdayCount}), 재크롤링`);
-            await keywordQueue.add('unifiedProcess', { type: 'basic', data: { keywordId, forceRecrawl: true } }, { priority: 3, jobId: `recrawl_basic_${keywordId}_${Date.now()}`, removeOnComplete: true });
-            return;
-          }
-        }
-        // 3) 안정적 크롤링 시 basic_last_crawled_date 업데이트
-        await updateKeywordBasicCrawled(keywordId);
-        break;
-
-      case 'detail':
-        // 단일 place 상세 크롤링 처리
-        const { placeId } = data;
-        await processDetailCrawl({ placeId });
-        break;
-
-      case 'userDetail':
-        // 다중 detail 작업 처리
-        const { placeIds } = data;
-        logger.info(`[userDetail] placeIds=${(placeIds || []).length} 시작`);
-        
-        if (!Array.isArray(placeIds)) {
-          logger.warn('[userDetail] placeIds 배열이 아님');
-          return;
-        }
-        
-        // 각 place를 순회
-        for (let i = 0; i < placeIds.length; i++) {
-          const placeId = placeIds[i];
-          try {
-            await processDetailCrawl({ placeId });
-            await randomDelay(1.4, 1.7);
-          } catch (err) {
-            logger.error(`[userDetail] placeId=${placeId} 실패: ${err.message}`);
-          }
-        }
-        
-        logger.info(`[userDetail] 총 ${placeIds.length}개 완료`);
-        break;
-
-      case 'userBasic':
-        // 사용자 지정 키워드(들)에 대한 basic 크롤링
-        const { keywords } = data;
-        logger.info(`[userBasic] 키워드 ${keywords.length}개 크롤링 시작`);
-        
-        if (!Array.isArray(keywords) || keywords.length === 0) {
-          logger.warn('[userBasic] 유효한 키워드 배열이 아님');
-          return;
-        }
-        
-        // 각 키워드를 순회하며 크롤링
-        for (let i = 0; i < keywords.length; i++) {
-          const keyword = keywords[i];
-          try {
-            logger.info(`[userBasic] 키워드 "${keyword}" 크롤링 시작 (${i+1}/${keywords.length})`);
-            await crawlKeywordBasic(keyword, null);
-            logger.info(`[userBasic] 키워드 "${keyword}" 크롤링 완료`);
-            
-            // 키워드 간 딜레이
-            if (i < keywords.length - 1) {
-              await randomDelay(2, 3);
-            }
-          } catch (err) {
-            logger.error(`[userBasic] 키워드 "${keyword}" 크롤링 실패: ${err.message}`);
-          }
-        }
-        
-        logger.info(`[userBasic] 총 ${keywords.length}개 키워드 크롤링 완료`);
-        break;
-
-      default:
-        logger.error(`[unifiedProcess] 알 수 없는 작업 타입: ${type}`);
-    }
-  } catch (err) {
-    logger.error(`[unifiedProcess] 타입=${type} 실패: ${err.message}`);
-    throw err;
+    // crawlKeywordBasic은 내부적으로 성공 시 detail-crawl 작업을 큐에 추가해야 함
+    await crawlKeywordBasic(keyword, keywordId, baseX, baseY, forceRecrawl);
+    logger.info(`[INFO][basic-crawl] 작업 성공: jobId=${job.id}, keywordId=${keywordId}`);
+  } catch (error) {
+    logger.error(`[ERROR][basic-crawl] 작업 실패: jobId=${job.id}, keywordId=${keywordId}, error: ${error.message}`);
+    throw error; // BullMQ가 재시도 등을 처리하도록 에러를 다시 던짐
   }
 });
+
+// Detail Crawl Processor: Concurrency 9 (adjust as needed)
+keywordQueue.process('detail-crawl', 9, async (job) => {
+  const { placeId } = job.data;
+  logger.info(`[INFO][detail-crawl] 작업 시작: jobId=${job.id}, placeId=${placeId}`);
+  try {
+    await processDetailCrawl({ placeId }); // Uses the existing wrapper
+    logger.info(`[INFO][detail-crawl] 작업 성공: jobId=${job.id}, placeId=${placeId}`);
+  } catch (error) {
+    logger.error(`[ERROR][detail-crawl] 작업 실패: jobId=${job.id}, placeId=${placeId}, error: ${error.message}`);
+    throw error; // BullMQ가 재시도 등을 처리하도록 에러를 다시 던짐
+  }
+});
+
+// Remove or comment out the old unifiedProcess
+// keywordQueue.process('unifiedProcess', 10, async (job) => {…});
 
 /* -----------------------------------------------------------------------------------
  * (E) 14:00 조건 자동 크롤링 (기존)
  * ----------------------------------------------------------------------------------- */
 export async function autoCheckAndAddBasicJobs() {
-  const keywords = await Keyword.findAll();
-  let count = 0;
-  let skippedNoResults = 0;
+  logger.info('[INFO] 자동 기본 크롤링 작업 추가 시작 (14시 스케줄러)...');
+  const keywords = await Keyword.findAll({
+    attributes: ['id', 'keyword', 'basic_last_crawled_date', 'preferences'],
+    where: { is_active: true }
+  });
+
+  let addedCount = 0;
   for (const kw of keywords) {
-    if (kw.has_no_results === true) {
-      skippedNoResults++;
-      continue;
-    }
     if (shouldBasicCrawlKeyword(kw.basic_last_crawled_date)) {
-      await keywordQueue.add('unifiedProcess', { 
-        type: 'basic', 
-        data: { keywordId: kw.id } 
-      }, { priority: 4 });
-      count++;
+      const coords = kw.preferences?.coordinates || { x: 126.9783882, y: 37.5666103 };
+      logger.info(`[INFO][autoCheckAndAddBasicJobs] 키워드 '${kw.keyword}' (ID: ${kw.id}) 'basic-crawl' 작업 추가`);
+      await keywordQueue.add('basic-crawl', {
+        keyword: kw.keyword,
+        keywordId: kw.id,
+        baseX: coords.x,
+        baseY: coords.y,
+        forceRecrawl: false
+      });
+      addedCount++;
     }
   }
-  logger.info(`[autoCheckAndAddBasicJobs] ${count}개 큐 등록, ${skippedNoResults}개 '결과 없음' 키워드 스킵`);
-  return count;
+  logger.info(`[INFO][autoCheckAndAddBasicJobs] 총 ${addedCount}개의 'basic-crawl' 작업 추가 완료.`);
 }
 
 /**
@@ -527,64 +426,38 @@ export async function autoCheckAndAddBasicJobs() {
  * @param {string} keyword - 크롤링할 키워드
  */
 export async function addUserBasicJob(keyword) {
-  if (!keyword) {
-    logger.warn('[WARN] addUserBasicJob: 유효하지 않은 키워드');
-    return;
+  if (!keyword || typeof keyword !== 'string' || keyword.trim() === '') {
+    logger.warn('[WARN][addUserBasicJob] 유효하지 않은 키워드 제공됨');
+    return { success: false, message: '유효하지 않은 키워드입니다.' };
   }
-  
-  await keywordQueue.add('unifiedProcess', { 
-    type: 'userBasic', 
-    data: { keywords: [keyword] }  // 배열 형태로 전달
-  }, { 
-    priority: 2,  // basic(4)보다 높은 우선순위
-    jobId: `userBasic_${keyword.replace(/\s+/g, '_').substring(0, 30)}_${Date.now()}` // 중복 방지를 위한 고유 ID
-  });
-  
-  logger.info(`[INFO] 새 키워드 "${keyword}"에 대한 크롤링 작업이 큐에 추가됨`);
+
+  try {
+    const [newKeyword, created] = await Keyword.findOrCreate({
+      where: { keyword: keyword.trim() },
+      defaults: {
+        keyword: keyword.trim(),
+        is_active: true,
+        // basic_last_crawled_date는 처음에는 null이므로 shouldBasicCrawlKeyword에 의해 크롤링됨
+      }
+    });
+
+    logger.info(`[INFO][addUserBasicJob] 키워드 '${newKeyword.keyword}' (ID: ${newKeyword.id}, 생성됨: ${created}) 'basic-crawl' 작업 추가 (forceRecrawl: true)`);
+    await keywordQueue.add('basic-crawl', {
+      keyword: newKeyword.keyword,
+      keywordId: newKeyword.id,
+      // baseX, baseY는 기본값 사용 또는 Keyword.preferences에서 가져오도록 crawlKeywordBasic에서 처리
+      forceRecrawl: true // 사용자가 직접 추가한 경우 강제 재크롤링 또는 즉시 크롤링
+    });
+    return { success: true, keywordId: newKeyword.id, message: `키워드 '${newKeyword.keyword}' 기본 크롤링 작업이 추가되었습니다.` };
+  } catch (error) {
+    logger.error(`[ERROR][addUserBasicJob] 키워드 '${keyword}' 작업 추가 중 오류: ${error.message}`);
+    return { success: false, message: '작업 추가 중 오류가 발생했습니다.' };
+  }
 }
 
 
 // 큐 비우기 (테스트용)
-await keywordQueue.empty();   
-
-
-
-/* -----------------------------------------------------------------------------------
- * (G) autoCrawlAll
-      const timeUntilTarget = targetTime - now;
-      
-      logger.info(`[INFO] 크롤링 스케줄러가 시작되었습니다. 매일 14:00에 실행됩니다.`);
-      logger.info(`[INFO] 다음 실행: ${targetTime.toISOString()} (${Math.round(timeUntilTarget/1000/60)} 분 후)`);
-      
-      setTimeout(() => {
-        autoCrawlAll()
-          .catch(err => logger.error('[ERROR] 자동 크롤링 실행 오류:', err));
-        
-        // 이후 매일 같은 시간에 실행
-        setInterval(() => {
-          autoCrawlAll()
-            .catch(err => logger.error('[ERROR] 자동 크롤링 실행 오류:', err));
-        }, 24 * 60 * 60 * 1000);
-      }, timeUntilTarget);
-    */
-// schedule daily basic crawl at 14:00
-(function scheduleDailyBasicCrawl() {
-  const now = new Date();
-  const targetTime = new Date(now);
-  targetTime.setHours(14, 0, 0, 0);
-  if (now > targetTime) {
-    targetTime.setDate(targetTime.getDate() + 1);
-  }
-  const timeUntilTarget = targetTime - now;
-  logger.info(`[INFO] 크롤링 스케줄러가 시작되었습니다. 매일 14:00에 실행됩니다.`);
-  logger.info(`[INFO] 다음 실행: ${targetTime.toISOString()} (${Math.round(timeUntilTarget/1000/60)} 분 후)`);
-  setTimeout(() => {
-    autoCheckAndAddBasicJobs().catch(err => logger.error('[ERROR] 자동 크롤링 실행 오류:', err));
-    setInterval(() => {
-      autoCheckAndAddBasicJobs().catch(err => logger.error('[ERROR] 자동 크롤링 실행 오류:', err));
-    }, 24 * 60 * 60 * 1000);
-  }, timeUntilTarget);
-})();
+// await keywordQueue.empty(); // 개발/테스트 시에만 사용하고 프로덕션에서는 주석 처리 또는 제거
 
 // 추가: 1분마다 불완전 데이터 처리 실행
 setInterval(async () => {

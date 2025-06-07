@@ -52,46 +52,6 @@ export function getRandomCoords(baseX, baseY, radiusM = 300) {
   };
 }
 
-/**
- * 모바일 UA와 쿠키 로드
- * 여러 쿠키 세트 중 랜덤으로 선택
- * @returns {{ua: string, cookieStr: string}}
- */
-// export function loadMobileUAandCookies() {
-//   // 사용 가능한 쿠키 파일 수 (필요에 따라 조정)
-//   const MAX_COOKIE_FILES = 3;
-  
-//   // 1에서 MAX_COOKIE_FILES 사이의 랜덤 인덱스 선택
-//   const randomIndex = Math.floor(Math.random() * MAX_COOKIE_FILES) + 1;
-  
-//   try {
-//     const dataPath = path.join(process.cwd(), `mobileNaverCookies_${randomIndex}.json`);
-    
-//     // 파일 존재 확인
-//     if (!fs.existsSync(dataPath)) {
-//       logger.warn(`쿠키 파일 없음: ${dataPath}, 기본 파일 사용`);
-//       // 기본 파일로 폴백
-//       const defaultPath = path.join(process.cwd(), 'mobileNaverCookies_1.json');
-//       const { ua, cookies } = JSON.parse(fs.readFileSync(defaultPath, 'utf-8'));
-//       const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-//       return { ua, cookieStr };
-//     }
-    
-//     // 선택된 랜덤 파일 로드
-//     const { ua, cookies } = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
-//     const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-    
-//     logger.debug(`쿠키 세트 #${randomIndex} 사용 중`);
-//     return { ua, cookieStr };
-//   } catch (err) {
-//     logger.error(`쿠키 로드 오류: ${err.message}`);
-//     // 오류 발생 시 하드코딩된 기본값 반환
-//     return {
-//       ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-//       cookieStr: 'NNB=ABCDEF; nx_ssl=2'
-//     };
-//   }
-// }
 export function loadMobileUAandCookies() {
   // 랜덤 선택 대신 고정 인덱스 사용 (1, 2, 3 중 원하는 번호로 설정)
   const fixedIndex = 3; // 항상 1번 쿠키 파일만 사용

@@ -10,8 +10,8 @@ import { createLogger } from '../lib/logger.js';
  * @param {string} controllerName - Name of the controller for logging
  * @returns {Object} Helper functions for the controller
  */
-export function createControllerHelper(controllerName) {
-  const logger = createLogger(controllerName);
+export function createControllerHelper(options) { // Changed parameter name from controllerName to options
+  const controllerSpecificLogger = createLogger(options.controllerName); // Use options.controllerName
 
   /**
    * Handles async controller functions with automatic error handling
@@ -23,7 +23,7 @@ export function createControllerHelper(controllerName) {
       try {
         await fn(req, res, next);
       } catch (error) {
-        logger.error(`${fn.name || 'Controller'} error: ${error.message}`);
+        controllerSpecificLogger.error(`${fn.name || 'Controller'} error: ${error.message}`); // Use controllerSpecificLogger
         return sendError(res, 500, error.message);
       }
     };
@@ -67,6 +67,12 @@ export function createControllerHelper(controllerName) {
   const sendError = (res, statusCode, message, details = null) => {
     const response = { success: false, message };
     
+    if (typeof statusCode !== 'number') {
+      // Attempt to prevent ERR_HTTP_INVALID_STATUS_CODE by logging and defaulting
+      controllerSpecificLogger.error(`Invalid statusCode type received: ${statusCode}. Defaulting to 500. Message: ${message}`);
+      statusCode = 500;
+    }
+    
     if (details) {
       response.details = details;
     }
@@ -101,14 +107,15 @@ export function createControllerHelper(controllerName) {
    * @param {string} operationName - Name of the operation for logging
    * @returns {*} Operation result or throws error
    */
-  const handleDbOperation = async (operation, operationName = 'Database operation') => {
+  const handleDbOperation = async (operationFn, operationDetails) => { // Renamed operation to operationFn
+    const operationName = typeof operationDetails === 'string' ? operationDetails : operationDetails.operationName || 'Database operation';
     try {
-      logger.debug(`${operationName} 시작`);
-      const result = await operation();
-      logger.debug(`${operationName} 완료`);
+      controllerSpecificLogger.debug(`${operationName} 시작`); // Use controllerSpecificLogger
+      const result = await operationFn(); // Call operationFn
+      controllerSpecificLogger.debug(`${operationName} 완료`); // Use controllerSpecificLogger
       return result;
     } catch (error) {
-      logger.error(`${operationName} 중 오류: ${error.message}`);
+      controllerSpecificLogger.error(`${operationName} 중 오류: ${error.message}`, error); // Use controllerSpecificLogger
       throw error;
     }
   };
@@ -125,7 +132,7 @@ export function createControllerHelper(controllerName) {
       ? `${resourceName} ID ${identifier}을(를) 찾을 수 없습니다`
       : `${resourceName}을(를) 찾을 수 없습니다`;
     
-    logger.warn(message);
+    controllerSpecificLogger.warn(message); // Use controllerSpecificLogger
     return sendError(res, 404, message);
   };
 
@@ -151,14 +158,13 @@ export function createControllerHelper(controllerName) {
    * @param {*} identifier - Resource identifier (optional)
    * @returns {*} The result
    */
-  const logAndReturn = (operation, result, identifier = null) => {
+  const logOperationResult = (operation, result, identifier = null) => {
     const idText = identifier ? ` (ID: ${identifier})` : '';
-    logger.info(`${operation} 완료${idText}`);
+    controllerSpecificLogger.info(`${operation} 완료${idText}`);
     return result;
   };
 
   return {
-    logger,
     asyncHandler,
     sendSuccess,
     sendError,
@@ -166,7 +172,8 @@ export function createControllerHelper(controllerName) {
     handleDbOperation,
     handleNotFound,
     validateArray,
-    logAndReturn
+    logOperationResult,
+    logger: controllerSpecificLogger // Return the controller-specific logger
   };
 }
 

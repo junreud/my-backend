@@ -1,7 +1,16 @@
 // routes/adminRoutes.js
 import express from 'express';
-import { query, body, param } from 'express-validator';
+import { query, body, param, validationResult } from 'express-validator';
 import { Op } from 'sequelize';
+
+// Controllers (Import new admin controllers)
+import {
+  getWorkHistoryOptions,
+  getWorkHistories,
+  createWorkHistoryEntry,
+  deleteWorkHistoryEntry,
+  getUsersWithPlaces
+} from '../controllers/adminController.js';
 
 // Models
 import WorkHistory from '../models/WorkHistory.js';
@@ -25,8 +34,9 @@ router.use(adminAndLog);
 router.get(
   '/work-histories/options',
   asyncHandler(async (req, res) => {
-    logger.info(`관리자(${req.user.email})가 작업 이력 옵션 조회`);
-    return sendSuccess(res, { workTypes: workTypeOptions, executors: executorOptions, filters: filterOptions });
+    // logger.info(`관리자(${req.user.email})가 작업 이력 옵션 조회`); // Logging moved to controller
+    const options = await getWorkHistoryOptions(req);
+    return sendSuccess(res, options);
   })
 );
 
@@ -37,10 +47,10 @@ router.get(
   query('offset').optional().isInt({ min: 0 }).toInt(),
   handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const { limit = 100, offset = 0 } = req.query;
-    logger.debug(`/work-histories 조회: limit=${limit}, offset=${offset}`);
-    const workHistories = await WorkHistory.findAll({ limit, offset, order: [['id', 'DESC']] });
-    logger.info(`관리자(${req.user.email})에게 ${workHistories.length}개 전송`);
+    // const { limit = 100, offset = 0 } = req.query;
+    // logger.debug(`/work-histories 조회: limit=${limit}, offset=${offset}`); // Logging moved to controller
+    const workHistories = await getWorkHistories(req);
+    // logger.info(`관리자(${req.user.email})에게 ${workHistories.length}개 전송`); // Logging moved to controller
     return sendSuccess(res, workHistories);
   })
 );
@@ -50,14 +60,15 @@ router.post(
   '/work-histories',
   body('user_id').isInt().toInt(),
   body('place_id').isInt().toInt(),
-  body('work_type').isIn(workTypeOptions),
-  body('executor').isIn(executorOptions),
+  body('work_type').isIn(workTypeOptions), // workTypeOptions should be available here or passed to controller if needed for validation logic there
+  body('executor').isIn(executorOptions), // executorOptions should be available here or passed to controller
+  handleValidationErrors, // handleValidationErrors will use validationResult
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const newWH = await WorkHistory.createWorkHistory(req.body);
-    logger.info(`새 작업 이력 생성: ID ${newWH.id}`);
-    return sendSuccess(res, newWH, '생성 완료', 201);
+    // const errors = validationResult(req); // Moved to handleValidationErrors middleware
+    // if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    const result = await createWorkHistoryEntry(req);
+    // logger.info(`새 작업 이력 생성: ID ${newWH.id}`); // Logging moved to controller
+    return sendSuccess(res, result.data, result.message, result.statusCode);
   })
 );
 
@@ -65,15 +76,17 @@ router.post(
 router.delete(
   '/work-histories/:id',
   param('id').isInt().toInt(),
+  handleValidationErrors, // Added handleValidationErrors
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const id = req.params.id;
-    const wh = await WorkHistory.findByPk(id);
-    if (!wh) return sendError(res, 404, '없음');
-    await wh.destroy();
-    logger.info(`작업 이력 삭제: ID ${id}`);
-    return sendSuccess(res, {}, '삭제 완료');
+    // const errors = validationResult(req); // Moved to handleValidationErrors middleware
+    // if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
+    // const id = req.params.id; // Logic moved to controller
+    // const wh = await WorkHistory.findByPk(id); // Logic moved to controller
+    // if (!wh) return sendError(res, 404, '없음'); // Logic moved to controller
+    // await wh.destroy(); // Logic moved to controller
+    const result = await deleteWorkHistoryEntry(req);
+    // logger.info(`작업 이력 삭제: ID ${id}`); // Logging moved to controller
+    return sendSuccess(res, result.data, result.message, result.statusCode);
   })
 );
 
@@ -84,22 +97,9 @@ router.delete(
 router.get(
   '/users-with-places',
   asyncHandler(async (req, res) => {
-    logger.debug('users-with-places 조회');
-    const users = await User.findAll({
-      where: { role: { [Op.ne]: 'admin' } },
-      attributes: ['id', 'name', 'email', 'phone'],
-      include: [{ model: Place, as: 'places', attributes: ['id', 'place_name'], required: true }]
-    });
-    const formattedUsers = users.map(user => ({
-      user_id: user.id,
-      name: user.name || '이름 없음',
-      email: user.email || '이메일 없음',
-      phone: user.phone || '연락처 없음',
-      place_names: user.places.map(p => p.place_name),
-      place_ids: user.places.map(p => String(p.id)),
-      place_count: user.places.length
-    }));
-    logger.info(`관리자(${req.user.email})가 사용자 목록 조회: ${formattedUsers.length}명`);
+    // logger.debug('users-with-places 조회'); // Logging moved to controller
+    const formattedUsers = await getUsersWithPlaces(req);
+    // logger.info(`관리자(${req.user.email})가 사용자 목록 조회: ${formattedUsers.length}명`); // Logging moved to controller
     return sendSuccess(res, formattedUsers);
   })
 );

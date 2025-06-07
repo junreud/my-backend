@@ -127,7 +127,8 @@ import "./services/crawler/keywordQueue.js";
   // 전역 에러 핸들러
   app.use((err, req, res, next) => {
     logger.error('Unhandled error:', err);
-    res.status(err.status || 500).json({ success: false, message: err.message || 'Internal Server Error' });
+    const statusCode = err.statusCode || err.status || 500;
+    res.status(statusCode).json({ success: false, message: err.message || 'Internal Server Error' });
   });
 
 // Redis 및 DB 연결

@@ -14,6 +14,69 @@ console.log('[PASSPORT] Google Strategy 설정 시작');
 console.log(`[PASSPORT] Google Client ID: ${process.env.GOOGLE_CLIENT_ID ? '설정됨' : '설정되지 않음'}`);
 console.log(`[PASSPORT] Google Callback URL: ${process.env.GOOGLE_CALLBACK_URL || '설정되지 않음'}`);
 
+// 공통 소셜 로그인 핸들러 함수
+async function handleSocialLogin(provider, profile, done) {
+  const providerId = profile.id;
+  let email = null;
+
+  if (provider === 'google') {
+    email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
+    if (!email) {
+      console.error('[PASSPORT] Google 계정에 이메일이 없습니다');
+      return done(null, false, { message: '이메일 정보가 필요합니다' });
+    }
+  } else if (provider === 'kakao') {
+    email = profile._json?.kakao_account?.email || null;
+  }
+
+  console.log(`[PASSPORT] ${provider} 사용자 인증 시도:`, email || `ID: ${providerId}`);
+
+  try {
+    let user = await User.findOne({
+      where: { provider, provider_id: providerId },
+    });
+
+    if (user) {
+      console.log(`[PASSPORT] 기존 ${provider} 사용자 (${email || providerId}) 찾음`);
+      return done(null, user);
+    }
+
+    if (email) {
+      const existingUserByEmail = await User.findOne({ where: { email } });
+      if (existingUserByEmail) {
+        if (existingUserByEmail.provider === 'local') {
+          console.log(`[PASSPORT] ${provider} 로그인 시도: 이메일(${email})이 로컬 계정과 충돌.`);
+          return done(null, false, {
+            message: provider === 'google' ? 'EMAIL_CONFLICT' : 'EMAIL_CONFLICT_LOCAL',
+            ...(provider === 'google' && { googleId: providerId }),
+            ...(provider === 'kakao' && { kakaoId: providerId }),
+            email,
+          });
+        } else if (existingUserByEmail.provider !== provider) {
+          if (provider === 'kakao') {
+            console.log(`[PASSPORT] Kakao 로그인 시도: 이메일(${email})이 다른 소셜 계정(${existingUserByEmail.provider})과 이미 연결되어 있습니다.`);
+            return done(null, false, { message: 'EMAIL_IN_USE_SOCIAL' });
+          }
+        }
+      }
+    }
+
+    const newUserEmail = (provider === 'kakao' && !email) ? "" : email;
+    user = await User.create({
+      email: newUserEmail,
+      provider,
+      provider_id: providerId,
+      is_completed: false,
+    });
+    console.log(`[PASSPORT] 새 ${provider} 사용자 생성됨:`, newUserEmail || `ID: ${providerId}`);
+    return done(null, user);
+
+  } catch (err) {
+    console.error(`[PASSPORT] ${provider} 전략 처리 중 오류:`, err);
+    return done(err, false);
+  }
+}
+
 // [2] JWT 전략 (토큰 검증)
 passport.use(
   new JwtStrategy(
@@ -21,21 +84,32 @@ passport.use(
       // Authorization 헤더 또는 token 쿠키에서 토큰 추출
       jwtFromRequest: ExtractJwt.fromExtractors([
         ExtractJwt.fromAuthHeaderAsBearerToken(),
-        (req) => req && req.cookies ? req.cookies.token : null
+        (req) => {
+          const tokenFromCookie = req && req.cookies ? req.cookies.token : null;
+          const tokenFromAuthHeader = ExtractJwt.fromAuthHeaderAsBearerToken()(req);
+          console.log('[JWT] 토큰 추출 시도');
+          console.log('[JWT] Cookie token:', tokenFromCookie ? tokenFromCookie.substring(0, 20) + '...' : 'null');
+          console.log('[JWT] Auth header token:', tokenFromAuthHeader ? tokenFromAuthHeader.substring(0, 20) + '...' : 'null');
+          return tokenFromAuthHeader || tokenFromCookie;
+        }
       ]),
       secretOrKey: process.env.ACCESS_TOKEN_SECRET, // .env에 저장된 키
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async (payload, done) => {
       try {
+        console.log('[JWT] 토큰 검증 시도. payload:', { userId: payload.userId, exp: payload.exp });
         // payload = { userId: XXX, iat: ..., exp: ... }
         const user = await User.findByPk(payload.userId);
         if (!user) {
+          console.log('[JWT] 사용자를 찾을 수 없음:', payload.userId);
           return done(null, false, { message: '유효하지 않은 토큰' });
         }
+        console.log('[JWT] 인증 성공:', user.email);
         // 인증 성공 시 user 반환
         return done(null, user);
       } catch (err) {
+        console.log('[JWT] 검증 중 오류:', err.message);
         return done(err, false);
       }
     }
@@ -91,50 +165,7 @@ try {
         callbackURL: process.env.GOOGLE_CALLBACK_URL,
       },
       async (accessToken, refreshToken, profile, done) => {
-        console.log('[PASSPORT] Google 사용자 인증 시도:', profile.emails && profile.emails[0] ? profile.emails[0].value : '이메일 없음');
-        try {
-          const googleId = profile.id;
-          const email = profile.emails && profile.emails[0] ? profile.emails[0].value : null;
-          
-          if (!email) {
-            console.error('[PASSPORT] Google 계정에 이메일이 없습니다');
-            return done(null, false, { message: '이메일 정보가 필요합니다' });
-          }
-
-          // 1) provider='google', provider_id=googleId 여부
-          let user = await User.findOne({
-            where: { provider: "google", provider_id: googleId },
-          });
-          if (!user) {
-            // 2) 혹시 로컬로 이미 email 가입이 있는가?
-            const existing = await User.findOne({ where: { email, provider: "local" } });
-            if (existing) {
-              // => 이메일 충돌
-              return done(null, false, {
-                message: "EMAIL_CONFLICT",
-                googleId,
-                email,
-              });
-            } else {
-              // (B-2) 완전 새로운 email(=DB에 없음) → 새로운 구글 계정으로 생성
-              user = await User.create({
-                email,
-                provider: 'google',
-                provider_id: googleId,
-                is_completed: false,
-              });
-              console.log('[PASSPORT] 새 Google 사용자 생성됨:', email);
-            }
-          } else {
-            console.log('[PASSPORT] 기존 Google 사용자 찾음:', email);
-          }
-
-          // (C) 최종적으로 user가 있으면 인증 성공
-          return done(null, user);
-        } catch (err) {
-          console.error('[PASSPORT] Google 전략 오류:', err);
-          return done(err, false);
-        }
+        await handleSocialLogin('google', profile, done);
       }
     )
   );
@@ -149,55 +180,15 @@ try {
     new KakaoStrategy(
       {
         clientID: process.env.KAKAO_CLIENT_ID,
-        clientSecret: process.env.KAKAO_SECRET_KEY,
+        clientSecret: process.env.KAKAO_SECRET_KEY, // 환경 변수 이름 확인 필요 (보통 KAKAO_CLIENT_SECRET 또는 유사)
         callbackURL: process.env.KAKAO_CALLBACK_URL,
       },
       async (accessToken, refreshToken, profile, done) => {
-        try {
-          const kakaoId = profile.id;
-          const email = profile._json?.kakao_account?.email || null;
-
-          // 이미 provider='kakao', provider_id=... 인 유저?
-          let user = await User.findOne({
-            where: { provider: "kakao", provider_id: kakaoId },
-          });
-          if (!user) {
-            // 소셜유저가 없음. 
-            // 1) email이 DB에 있는지?
-            if (email) {
-              const existingUser = await User.findOne({ where: { email } });
-              if (existingUser) {
-                // (A) existingUser가 provider='local' => "비번 인증 후 소셜 연동"
-                if (existingUser.provider === "local") {
-                  return done(null, false, {
-                    message: "EMAIL_CONFLICT_LOCAL",
-                    email,
-                    kakaoId,
-                  });
-                } else {
-                  // (B) existingUser가 'kakao'/'google' => 소셜 vs 소셜 => 가입 불가
-                  return done(null, false, {
-                    message: "EMAIL_IN_USE_SOCIAL",
-                  });
-                }
-              }
-            }
-            // 2) 아예 없는 email => 새 user
-            user = await User.create({
-              email: email || "",
-              provider: "kakao",
-              provider_id: kakaoId,
-              is_completed: false,
-            });
-          }
-          // 이미 (kakao,kakaoId)인 user
-          return done(null, user);
-        } catch (err) {
-          return done(err, false);
-        }
+        await handleSocialLogin('kakao', profile, done);
       }
     )
   );
+  console.log('[PASSPORT] Kakao Strategy 설정 완료'); // Kakao 로그 추가
 } catch (error) {
   console.error('[PASSPORT] Kakao Strategy 설정 실패:', error);
 }

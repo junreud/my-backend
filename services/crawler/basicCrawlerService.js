@@ -174,586 +174,240 @@ async function performInfiniteScroll(page, itemSelector, maxItems = 300) {
  *  - isRestaurant 값은 isRestaurantChecker.js로부터 가져옴
  */
 export async function crawlKeywordBasic(keyword, keywordId, baseX = 126.9783882, baseY = 37.5666103, forceRecrawl = false) {
+  const __filename = fileURLToPath(import.meta.url);
+  logger.info(`[INFO] 키워드 '${keyword}'(ID:${keywordId}) 기본 크롤링 시작. 좌표: (${baseX}, ${baseY}), 강제 재크롤링: ${forceRecrawl}`);
+
+  // 14:00 기준 사이클 계산 (PlaceDetailResult 생성 시 사용)
+  const now = new Date();
+  const today14h = new Date(now);
+  today14h.setHours(14, 0, 0, 0);
+  const cycleStart = now >= today14h ? today14h : new Date(today14h.getTime() - 24 * 60 * 60 * 1000);
+
   let browser;
+  let context;
   let page;
-  let keywordText = keyword; 
+  let success = false;
+  let crawledItemsCount = 0;
+  let errorDetails = null;
 
   try {
-    // 1) 키워드 정보 확인
-    let keywordObj;
-    
-    if (keywordId) {
-      keywordObj = await Keyword.findByPk(keywordId);
-      if (!keywordObj) {
-        logger.error(`[ERROR] 키워드 ID ${keywordId}를 찾을 수 없습니다.`);
-        throw new Error(`키워드 ID ${keywordId}를 찾을 수 없습니다.`);
-      }
-      keywordText = keywordObj.keyword;
-    } else {
-      // 키워드 이름으로 검색
-      keywordObj = await Keyword.findOne({ where: { keyword: keywordText } });
-      
-      if (!keywordObj) {
-        await checkIsRestaurantByDOM(keywordText);
-        // 생성 후 다시 조회
-        keywordObj = await Keyword.findOne({ where: { keyword: keywordText } });
-        
-        if (!keywordObj) {
-          logger.error(`[ERROR] 키워드 "${keywordText}" 생성 실패 또는 조회 실패`);
-          throw new Error(`키워드 "${keywordText}" 처리 중 오류가 발생했습니다.`);
-        }
-        logger.info(` 새 키워드 "${keywordText}" 생성됨, ID: ${keywordObj.id}`);
-      } else {
-        // 기존 코드 유지: 오늘 날짜 14시 기준 확인
-        const now = new Date();
-        const today14h = new Date(now);
-        today14h.setHours(14, 0, 0, 0);
-        
-        if (keywordObj.basic_last_crawled_date) {
-          const lastCrawled = new Date(keywordObj.basic_last_crawled_date);
-          if (lastCrawled >= today14h && now >= today14h) {
-            logger.info(` 키워드 "${keywordText}"는 이미 오늘 14시 이후에 크롤링되었습니다. 처리를 건너뜁니다.`);
-            return [];
-          }
-        }
-      }
-      keywordId = keywordObj.id;
-    }
-
-    if (forceRecrawl) {
-      const now = new Date();
-      const today14h = new Date(now);
-      today14h.setHours(14, 0, 0, 0);
-      const startDate = now < today14h ? 
-        new Date(today14h.getTime() - 24 * 60 * 60 * 1000) : 
-        today14h;
-
-      const deleteCount = await KeywordBasicCrawlResult.destroy({
-        where: { keyword_id: keywordId, created_at: { [Op.gte]: startDate } }
-      });
-      logger.info(`[INFO] 키워드 "${keywordText}" (ID: ${keywordId})의 기존 레코드 ${deleteCount}개를 삭제했습니다 (강제 재크롤링)`);
-    }
-
-    logger.info(`[BasicCrawler] 키워드 "${keywordText}" 기본 크롤링 시작`);
-
-    const isRestaurantVal = keywordObj.isRestaurant ? 1 : 0;
-    logger.debug(`[DEBUG] isRestaurantVal=${isRestaurantVal}`);
-
-    // Puppeteer 옵션
-    const launchOptions = {
-      headless: true,  // boolean expected by Playwright
-      args: []
-    };
-    if (PROXY_SERVER) {
-      launchOptions.args.push(`--proxy-server=${PROXY_SERVER}`);
-      logger.info(' 프록시 사용:', PROXY_SERVER);
-    }
-    // Launch Playwright browser with same options
-    browser = await chromium.launch({ headless: launchOptions.headless, args: launchOptions.args });
-    // Create context with mobile UA and cookies
     const { ua, cookieStr } = loadMobileUAandCookies();
-    const context = await browser.newContext({ userAgent: ua });
-    const cookieArr = cookieStr.split('; ').map(pair => {
-      const [name, value] = pair.split('=');
-      return { name, value, domain: '.naver.com', path: '/' };
+    const cookies = cookieStr.split('; ').map(pair => {
+      const parts = pair.split('=');
+      return { name: parts[0], value: parts[1], domain: '.naver.com', path: '/' };
     });
-    await context.addCookies(cookieArr);
+
+    const proxyArgs = PROXY_SERVER ? [`--proxy-server=${PROXY_SERVER}`] : [];
+    browser = await chromium.launch({
+      headless: true, // 실제 운영 시 true
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        // '--single-process', // 일부 환경에서 문제 발생 가능
+        '--disable-gpu',
+        ...proxyArgs
+      ]
+    });
+
+    context = await browser.newContext({
+      userAgent: ua,
+      geolocation: { longitude: parseFloat(baseX), latitude: parseFloat(baseY) },
+      bypassCSP: true,
+      extraHTTPHeaders: {
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+      }
+    });
+    await context.addCookies(cookies);
     page = await context.newPage();
 
-    // 무작위 좌표
-    const { randX, randY } = getRandomCoords(baseX, baseY, 300);
-    logger.debug(`[DEBUG] 무작위 좌표: (x=${randX.toFixed(7)}, y=${randY.toFixed(7)})`);
+    const url = `https://m.place.naver.com/search?query=${encodeURIComponent(keyword)}&sm=mtb_hty.top&ssc=tab.m.all&entry=plt`;
+    logger.info(`[INFO] URL로 이동 중: ${url}`);
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
 
-    // 2) 검색 URL - 맛집 여부에 따라 경로 조정
-    const encodedKeyword = encodeURIComponent(keywordText);
-    const route = isRestaurantVal === 1 ? 'restaurant' : 'place';
+    await randomDelay(2, 3);
 
-    let placeUrl = `https://m.place.naver.com/${route}/list?query=${encodedKeyword}&x=${randX}&y=${randY}&level=top&entry=pll`;
-    logger.debug(`[DEBUG] 기본 정보 URL: ${placeUrl}`);
-  
-    // 페이지 이동
-    logger.info(' 페이지 이동:', placeUrl);
-    await page.goto(placeUrl, { waitUntil: 'domcontentloaded' });
-
-    // 목록 셀렉터 정의 (basic crawl 에서 순위 리스트 항목 셀렉터)
-    const listItemSelector = isRestaurantVal ? 'li.UEzoS' : 'li.VLTHu';
-    logger.info(` 선택된 목록 셀렉터: ${listItemSelector}`);
-    // '조건에 맞는 업체가 없습니다' 메시지: no-result 컨테이너만 대상
-    const noResultsSelector = 'div.FYvSc';
-    const noResultsText = await page.evaluate((sel) => {
-      const el = document.querySelector(sel);
-      return el && el.textContent.includes('조건에 맞는 업체가 없습니다') ? el.textContent : null;
-    }, noResultsSelector);
-    // 실제 결과 리스트 아이템 존재 여부 확인
-    const hasResults = await page.$$eval(listItemSelector, els => els.length > 0);
-    if (noResultsText && !hasResults) {
-      logger.info(`[BasicCrawler] 키워드 "${keywordText}": 조건에 맞는 업체가 없습니다. 저장 없이 종료합니다.`);
-      // has_no_results 플래그 설정
-      try {
-        await Keyword.update(
-          { has_no_results: true },
-          { where: { id: keywordId } }
-        );
-        logger.info(`[BasicCrawler] 키워드 "${keywordText}" (ID: ${keywordId})에 has_no_results=true 설정 완료`);
-      } catch (flagErr) {
-        logger.error(`[ERROR] has_no_results 플래그 설정 실패: ${flagErr.message}`);
-      }
-      // basic_last_crawled_date는 업데이트하여 매번 크롤링하지 않도록 함
-      await updateKeywordBasicCrawled(keywordId);
-      return [];
-    }
-    // 셀렉터 대기
-    try {
-      // Mapbox 캔버스 대기 추가
-      logger.info(' 맵박스 캔버스 대기 중... (최대 15초)');
-      await page.waitForSelector('canvas.mapboxgl-canvas', { 
-        timeout: 15000,
-        visible: true  // 실제로 화면에 보이는지 확인
-      });
-      logger.info(' 맵박스 캔버스 로딩 완료');
-      
-      // 잠시 대기하여 맵이 완전히 렌더링되도록 함
-      await page.waitForFunction(() => {
-        const canvas = document.querySelector('canvas.mapboxgl-canvas');
-        return canvas && canvas.width > 0 && canvas.height > 0;
-      }, { timeout: 5000 });
-      logger.info(' 맵박스 캔버스 렌더링 확인 완료');
-      
-      const count = await page.$$eval(listItemSelector, els => els.length);
-      logger.info(` ${listItemSelector} 셀렉터로 ${count}개 항목 발견됨`);
-    } catch (err) {
-      logger.error('[ERROR] canvas.mapboxgl-canvas 로딩 실패:', err);
-      throw new Error('Mapbox canvas failed to load - aborting crawl');
-    }
-    await randomDelay(1, 1.5);
     // 무한 스크롤
-    await performInfiniteScroll(page, listItemSelector);
+    const itemSelector = 'li[data-laim-exp-id]'; // 광고 포함 모든 아이템
+    await performInfiniteScroll(page, itemSelector, 300); // 최대 300개 (광고 제외)
 
-    // 목록 아이템 추출
-    const items = await page.$$eval(listItemSelector, (els, options) => {
-      const { maxCount, isRestaurant } = options;
-      // 광고 아닌 요소만 필터링
-      const filteredElements = Array.from(els).filter(el => el.getAttribute('data-laim-exp-id') !== 'undefined*e');
-      const results = [];
-      for (let i = 0; i < filteredElements.length && results.length < maxCount; i++) {
-        const el = filteredElements[i];
-        const aTag = el.querySelector('a');
-        if (!aTag) continue;
-        const href = aTag.getAttribute('href') || '';
-        const m = href.match(/\/(?:restaurant|place|cafe)\/(\d+)/);
-        const exPlaceId = m?.[1] || '';
-        let nameEl, catEl;
-        if (isRestaurant) {
-          nameEl = el.querySelector('span.TYaxT');
-          catEl = el.querySelector('.KCMnt');
-        } else {
-          nameEl = el.querySelector('span.YwYLL');
-          catEl = el.querySelector('span.YzBgS');
-        }
-        const name = nameEl?.textContent.trim() || '';
-        const category = catEl?.textContent.trim() || '';
-        results.push({ placeId: exPlaceId, name, category, rank: i + 1, isRestaurant });
-      }
-      return results;
-    }, { maxCount: 300, isRestaurant: isRestaurantVal === 1 });
-
-    // 2. 저장많은 순 페이지에서 "저장수" 정보 추출 (맛집인 경우)
-    let savedCounts = {};
-    if (isRestaurantVal === 1) {
-      const savedUrl = `https://m.place.naver.com/${route}/list?query=${encodedKeyword}&x=${randX}&y=${randY}&order=false&rank=저장많은&keywordFilter=voting%5Efalse&level=top&entry=pll`;
-      logger.info(' 저장수 정보 페이지 이동:', savedUrl);
-      await page.goto(savedUrl, { waitUntil: 'domcontentloaded' });
-      try { await page.waitForSelector('canvas.mapboxgl-canvas', { timeout:15000, visible:true }); } catch {}
-      await randomDelay(1,2);
-      
-      // 무한 스크롤 수행
-      await performInfiniteScroll(page, listItemSelector);
-      
-      // 저장수 정보와 함께 장소 ID와 이름도 추출
-      savedCounts = await page.evaluate((selector) => {
-        const counts = {};
-        const places = {};
-        
-        document.querySelectorAll(selector).forEach(item => {
-          const aTag = item.querySelector('a');
-          const m = aTag?.href.match(/\/(?:restaurant|place|cafe)\/(\d+)/);
-          if (m?.[1]) {
-            const placeId = m[1];
-            const text = item.textContent || '';
-            const match = text.match(/(\d[\d,]*)\s*(?:저장|찜|즐겨찾기)/);
-            
-            // 저장수 정보 저장
-            if (match?.[1]) {
-              counts[placeId] = parseInt(match[1].replace(/,/g,''),10);
-            }
-            
-            // 장소 이름 추출 (맛집 셀렉터에 맞춤)
-            const nameEl = item.querySelector('span.TYaxT');
-            const catEl = item.querySelector('.KCMnt');
-            
-            if (nameEl) {
-              places[placeId] = {
-                place_name: nameEl.textContent.trim(),
-                category: catEl ? catEl.textContent.trim() : ''
-              };
+    const items = await page.evaluate((selector, currentCycleStart) => {
+      const elements = Array.from(document.querySelectorAll(selector));
+      return elements
+        .filter(el => {
+          const laimExpId = el.getAttribute('data-laim-exp-id');
+          return laimExpId !== 'undefined*e'; // 광고 제외
+        })
+        .map((el, index) => {
+          const placeId = el.getAttribute('data-id');
+          const name = el.querySelector('.place_bluelink > span.place_bluelink_text')?.innerText.trim() || el.querySelector('span.YwYLL')?.innerText.trim();
+          const category = el.querySelector('span.KCMnt')?.innerText.trim();
+          const reviewElement = el.querySelector('span.h69bs.a2RFq');
+          let reviewCount = 0;
+          if (reviewElement) {
+            const reviewText = reviewElement.innerText.match(/[\d,]+/);
+            if (reviewText) {
+              reviewCount = parseInt(reviewText[0].replace(/,/g, ''), 10);
             }
           }
+          const link = el.querySelector('a.P7gyV')?.href;
+          const address = el.querySelector('.qHRwL')?.innerText.trim();
+
+          // 저장수 추출 (새로운 셀렉터 기반)
+          let savedCount = 0;
+          const saveButton = el.querySelector('button[aria-label*="저장"] span.place_save_count');
+          if (saveButton && saveButton.innerText) {
+            const savedText = saveButton.innerText.match(/[\d,]+/);
+            if (savedText) {
+              savedCount = parseInt(savedText[0].replace(/,/g, ''), 10);
+            }
+          }
+
+          return {
+            rank: index + 1,
+            placeId,
+            name,
+            category,
+            reviewCount,
+            link,
+            address,
+            savedCount,
+            // isRestaurant는 여기서 판단하지 않고, PlaceDetailResult 생성/업데이트 시 checkIsRestaurantByDOM 호출
+            // created_at은 PlaceDetailResult 생성 시 cycleStart 기준으로 설정
+          };
         });
-        
-        return { counts, places };
-      }, listItemSelector);
-      
-      logger.info(` 저장수 정보: ${Object.keys(savedCounts.counts).length}개 항목`);
-    }
+    }, itemSelector, cycleStart.toISOString());
 
-    // 결과가 없는 경우 (추가 조건)
-    if (!items || items.length === 0) {
-      logger.info(`[BasicCrawler] 키워드 "${keywordText}": 유효한 업체 결과가 없습니다. 저장하지 않고 종료합니다.`);
-      // basic_last_crawled_date는 업데이트하여 매번 크롤링하지 않도록 함
-      await updateKeywordBasicCrawled(keywordId);
-      return [];
-    }
+    crawledItemsCount = items.length;
+    logger.info(`[INFO] 키워드 '${keyword}' (ID:${keywordId}) 기본 크롤링 완료. ${crawledItemsCount}개 항목 수집.`);
 
-    // --- 크롤링 성공/불안정 판정 로직 추가 ---
-    // 어제 대비 오늘 결과가 적고, 오늘 결과가 100의 배수면 불안정으로 간주
-    const now = new Date();
-    const today14h = new Date(now); today14h.setHours(14,0,0,0);
-    const startDate = now < today14h ? new Date(today14h.getTime() - 24*60*60*1000) : today14h;
-    const prevStart = new Date(startDate.getTime() - 24*60*60*1000);
-    const yesterdayCount = await KeywordBasicCrawlResult.count({
-      where: { keyword_id: keywordId, created_at: { [Op.gte]: prevStart, [Op.lt]: startDate } }
-    });
-    const todayCount = items.length;
-    if (!forceRecrawl && todayCount < yesterdayCount && todayCount % 100 === 0) {
-      logger.warn(`[BasicCrawler] 키워드 "${keywordText}": 오늘 결과(${todayCount}) < 어제(${yesterdayCount}) && 100단위 → 불안정, basic_last_crawled_date 미갱신 및 재크롤 예약`);
-      // forceRecrawl로 큐에 재등록
-      if (typeof keywordQueue?.add === 'function') {
-        await keywordQueue.add('unifiedProcess', { type: 'basic', data: { keywordId, forceRecrawl: true } }, { priority: 3, jobId: `recrawl_basic_${keywordId}_${Date.now()}`, removeOnComplete: true });
-      }
-      // 날짜 미갱신, 바로 반환
-      return items;
-    }
-
-    // (A) DB 저장 로직 시작 - 14:00 rule startDate는 이미 위에서 계산된 값을 재사용
-    logger.info(`14:00 rule applied: Start date = ${startDate.toISOString()}`);
-
-    /**
-     * 2) 수집된 items를 돌면서 KeywordBasicCrawlResult 항상 새로 생성
-     */
-    const failedItems = [];
-    const stats = {
-      total: items.length,
-      success: 0,
-      created: 0,
-      updated: 0,
-      failed: 0
-    };
-
-    logger.info(`[BasicCrawler] 키워드 "${keywordText}" - 총 ${items.length}개 항목 새로 저장 시작`);
-
-    // 기존 레코드 삭제 로직 제거하고 항상 새로운 행으로 저장
-    for (const item of items) {
-      if (!item.placeId) continue;
-
+    if (crawledItemsCount > 0) {
+      const transaction = await sequelize.transaction();
       try {
-        // 항상 새로운 행으로 생성
-        await KeywordBasicCrawlResult.create({
+        const crawlResult = await KeywordBasicCrawlResult.create({
           keyword_id: keywordId,
-          place_id: parseInt(item.placeId, 10),
-          place_name: item.name,
-          category: item.category,
-          ranking: item.rank,
-          last_crawled_at: new Date()
-        });
-        stats.created++;
-        stats.success++;
-      } catch (err) {
-        logger.error(`[ERROR] Failed to process item (placeId=${item.placeId}, name=${item.name}):`, err);
-        failedItems.push(item);
-        stats.failed++;
-      }
-    }
+          keyword: keyword,
+          result_count: crawledItemsCount,
+          items: JSON.stringify(items), // items 배열 전체 저장
+          crawled_at: new Date()
+        }, { transaction });
 
-    // 통계 로깅 (삭제 관련 로그 제거)
-    if (stats.created > 0) {
-      logger.info(`[DB:CREATE] Created ${stats.created} new records for keyword "${keywordText}"`);
-    }
+        logger.info(`[INFO] KeywordBasicCrawlResult 저장 완료 (ID: ${crawlResult.id})`);
 
-    // 로그 출력 수정
-    logger.info(`[BasicCrawler] Statistics for keyword "${keywordText}":`);
-    logger.info(`- Total processed: ${stats.total}`);
-    logger.info(`- Successfully created: ${stats.created}`);
-    logger.info(`- Failed: ${stats.failed}`);
-    logger.info(`- Completion rate: ${((stats.success) / stats.total * 100).toFixed(1)}%`);
+        // PlaceDetailResult 생성 또는 업데이트 및 detail-crawl 작업 추가
+        for (const item of items) {
+          if (!item.placeId) {
+            logger.warn(`[WARN] PlaceId가 없는 항목 발견: ${item.name}, 건너<0xEB><0><0x84>뛰기.`);
+            continue;
+          }
 
-    /** 
-     * 5) items가 존재하면 basic_last_crawled_date 업데이트 
-     */
-    if (items && items.length > 0) {
-      await updateKeywordBasicCrawled(keywordId);
-      logger.info(`[BasicCrawler] 키워드 "${keywordText}" 기본 크롤링 완료, basic_last_crawled_date 업데이트됨.`);
-      // 추가: Naver 광고 API로 검색량 조회 후 DB 업데이트
-      try {
-        const [volInfo] = await getSearchVolumes([keywordText]);
-        if (volInfo && volInfo.monthlySearchVolume != null) {
-          await Keyword.update(
-            { monthlySearchVolume: volInfo.monthlySearchVolume },
-            { where: { id: keywordId } }
-          );
-          logger.info(`Keyword ID ${keywordId} monthlySearchVolume 업데이트: ${volInfo.monthlySearchVolume}`);
+          const [placeDetailRecord, created] = await PlaceDetailResult.findOrCreate({
+            where: {
+              place_id: item.placeId,
+              created_at: { [Op.gte]: cycleStart } // 오늘자 레코드
+            },
+            defaults: {
+              place_id: item.placeId,
+              place_name: item.name,
+              category: item.category,
+              address: item.address,
+              savedCount: item.savedCount, // 기본 크롤링에서 수집한 저장수
+              // is_restaurant는 여기서 null로 두고, detail 크롤링 시 또는 별도 로직으로 채움
+              // blog_review_count, receipt_review_count, keywordList 등은 detail 크롤링 담당
+              created_at: cycleStart // 정확한 사이클 시작 시간으로 설정
+            },
+            transaction
+          });
+
+          if (created) {
+            logger.info(`[INFO] PlaceDetailResult 생성 (ID: ${placeDetailRecord.id}, PlaceID: ${item.placeId}, Name: ${item.name})`);
+          } else {
+            // 이미 존재하면 savedCount 등 기본 정보 업데이트 (필요 시)
+            // 기본 크롤링에서 얻은 정보가 더 최신이거나 정확할 경우에만 업데이트
+            // 여기서는 findOrCreate로 인해 이미 생성된 레코드는 defaults가 적용되지 않으므로,
+            // 필요한 경우 명시적으로 update 호출
+            if (placeDetailRecord.place_name !== item.name || 
+                placeDetailRecord.category !== item.category || 
+                placeDetailRecord.address !== item.address ||
+                placeDetailRecord.savedCount !== item.savedCount) {
+              await placeDetailRecord.update({
+                place_name: item.name,
+                category: item.category,
+                address: item.address,
+                savedCount: item.savedCount
+              }, { transaction });
+              logger.info(`[INFO] PlaceDetailResult 업데이트 (ID: ${placeDetailRecord.id}, PlaceID: ${item.placeId})`);
+            }
+          }
+          
+          // isRestaurant 값 확인 및 업데이트 (DOM 기반)
+          // 이 로직은 detailCrawlerService의 crawlAndUpdatePlace로 이동하거나, 여기서 유지할 수 있음.
+          // 여기서는 PlaceDetailResult에 is_restaurant 필드가 있다고 가정하고 업데이트 시도.
+          // 만약 is_restaurant 필드가 아직 null이면 DOM 체크를 시도할 수 있음.
+          if (placeDetailRecord.is_restaurant === null) {
+            try {
+              // checkIsRestaurantByDOM은 placeId와 HTML이 필요하므로, 여기서는 직접 호출하기 어려움.
+              // 이 부분은 detail 크롤링 시 처리하거나, 별도의 서비스로 분리하는 것이 적절.
+              // 임시로, 카테고리 기반으로 간단히 추정하거나, detail 크롤링에 맡김.
+              // logger.info(`[INFO] is_restaurant 값은 detail 크롤링 시 결정됩니다 (PlaceID: ${item.placeId})`);
+            } catch (isRestaurantError) {
+              logger.warn(`[WARN] is_restaurant 확인 중 오류 (PlaceID: ${item.placeId}): ${isRestaurantError.message}`);
+            }
+          }
+
+          // Add detail crawl job to the queue
+          logger.info(`[INFO] 'detail-crawl' 작업 추가: PlaceID=${item.placeId}`);
+          await keywordQueue.add('detail-crawl', { placeId: item.placeId });
+
         }
-      } catch (apiErr) {
-        logger.error(`[ERROR] 검색량 업데이트 실패:`, apiErr);
+
+        await transaction.commit();
+        success = true;
+      } catch (dbError) {
+        await transaction.rollback();
+        logger.error(`[ERROR] DB 작업 중 오류 (키워드 ID ${keywordId}): ${dbError.message}`, dbError);
+        errorDetails = `DB Error: ${dbError.message}`;
+        throw dbError; // 에러를 다시 던져서 호출자가 처리하도록 함
       }
     } else {
-      logger.info(`[BasicCrawler] 키워드 "${keywordText}" 결과없음. basic_last_crawled_date 업데이트 안 함.`);
+      logger.info(`[INFO] 키워드 '${keyword}' (ID:${keywordId})에 대한 검색 결과 없음.`);
+      // 검색 결과가 없는 경우에도 KeywordBasicCrawlResult를 생성할 수 있음 (result_count: 0)
+      await KeywordBasicCrawlResult.create({
+        keyword_id: keywordId,
+        keyword: keyword,
+        result_count: 0,
+        items: JSON.stringify([]),
+        crawled_at: new Date()
+      });
+      success = true; // 결과가 없는 것도 성공으로 간주
     }
 
-    // (C) 이제 저장수 정보만 PlaceDetailResult 테이블에 저장
-    logger.info(`[BasicCrawler] 키워드 "${keywordText}" - place_detail_results 테이블에 저장수 정보 저장 시작`);
-
-    try {
-      // 1) "14:00" 기준 사이클 계산
-      const now = new Date();
-      const today14h = new Date(now);
-      today14h.setHours(14, 0, 0, 0);
-
-      let cycleStart; // 이번 사이클 시작 시각
-      if (now >= today14h) {
-        cycleStart = today14h;
-      } else {
-        cycleStart = new Date(today14h.getTime() - 24 * 60 * 60 * 1000);
-      }
-
-      // 통계용 카운트 초기화
-      let insertedCount = 0;
-      let updatedCount = 0;
-      let errorCount = 0;
-
-      // 저장수 정보가 있을 경우에만 처리 (맛집 카테고리)
-      if (isRestaurantVal === 1 && savedCounts.counts && Object.keys(savedCounts.counts).length > 0) {
-        const savedPlaceIds = Object.keys(savedCounts.counts).map(id => parseInt(id, 10));
-        
-        logger.info(`[BasicCrawler] 키워드 "${keywordText}" - 저장수 정보 있는 장소 ${savedPlaceIds.length}개 처리 시작`);
-        
-        // 저장수 정보가 있는 모든 장소들을 처리
-        for (const pid of savedPlaceIds) {
-          const placeInfo = savedCounts.places[pid];
-          const savedCount = savedCounts.counts[pid];
-          
-          if (!savedCount) continue;
-          
-          try {
-            await sequelize.transaction(async (t) => {
-              // 기존 레코드 찾기
-              const existing = await PlaceDetailResult.findOne({
-                where: {
-                  place_id: pid,
-                  created_at: { [Op.gte]: cycleStart }
-                },
-                transaction: t
-              });
-              
-              if (existing) {
-                // 기존 레코드가 있으면 저장수만 업데이트
-                await existing.update(
-                  { savedCount },
-                  { transaction: t }
-                );
-                updatedCount++;
-              } else {
-                // 없으면 새로운 레코드 생성
-                await PlaceDetailResult.create({
-                  place_id: pid,
-                  place_name: placeInfo?.place_name || '알 수 없음',
-                  category: placeInfo?.category || '',
-                  is_restaurant: true,  // 저장많은순 페이지는 항상 맛집
-                  last_crawled_at: null,
-                  savedCount,
-                  crawl_status: 'pending'  // 상세 크롤링 대기 상태로 설정
-                }, { transaction: t });
-                insertedCount++;
-                
-                // 상세 정보를 위해 detail 크롤링 큐에 추가
-                if (keywordQueue && typeof keywordQueue.add === 'function') {
-                  await keywordQueue.add(
-                    'unifiedProcess',
-                    { type: 'detail', data: { placeId: pid } },
-                    { 
-                      priority: 6,  // 낮은 우선순위
-                      jobId: `saved_detail_${pid}_${Date.now()}`,
-                      removeOnComplete: true
-                    }
-                  );
-                }
-              }
-            });
-          } catch (err) {
-            errorCount++;
-            logger.error(`[ERROR] Failed to process place_id=${pid} for savedCount: ${err.message}`);
-          }
-        }
-      } else {
-        logger.info(`[BasicCrawler] 키워드 "${keywordText}"에 대해 저장수 정보가 없습니다 (맛집 아님 또는 저장 데이터 없음)`);
-      }
-
-      // 기본 크롤링에서 저장수가 없는 장소들 처리
-      if (isRestaurantVal === 1) {
-        const basicPlaceIds = items.map(item => parseInt(item.placeId, 10)).filter(id => !isNaN(id));
-        // 저장수 정보가 없는 장소들 필터링
-        const placeIdsWithoutSavedCount = basicPlaceIds.filter(pid => !savedCounts.counts || savedCounts.counts[pid] === undefined);
-        
-        if (placeIdsWithoutSavedCount.length > 0) {
-          logger.info(`[BasicCrawler] 키워드 "${keywordText}" - 저장수 정보 없는 장소 ${placeIdsWithoutSavedCount.length}개 처리 시작`);
-          
-          let preservedCount = 0;
-          
-          for (const pid of placeIdsWithoutSavedCount) {
-            const item = items.find(it => parseInt(it.placeId, 10) === pid);
-            if (!item) continue;
-            
-            try {
-              await sequelize.transaction(async (t) => {
-                // 현재 사이클에 이미 존재하는 레코드 확인
-                const existing = await PlaceDetailResult.findOne({
-                  where: {
-                    place_id: pid,
-                    created_at: { [Op.gte]: cycleStart }
-                  },
-                  transaction: t
-                });
-                
-                if (existing) {
-                  // 이미 레코드가 있고 저장수가 null이면 이전 사이클 데이터 확인
-                  if (existing.savedCount === null) {
-                    // 이전 사이클의 저장수 값이 있는지 확인
-                    const previousRecord = await PlaceDetailResult.findOne({
-                      where: {
-                        place_id: pid,
-                        created_at: { [Op.lt]: cycleStart },
-                        savedCount: { [Op.ne]: null }
-                      },
-                      order: [['created_at', 'DESC']],
-                      transaction: t
-                    });
-                    
-                    if (previousRecord && previousRecord.savedCount !== null) {
-                      // 이전 값이 있으면 복사
-                      await existing.update(
-                        { savedCount: previousRecord.savedCount },
-                        { transaction: t }
-                      );
-                      preservedCount++;
-                      logger.debug(`[INFO] place_id=${pid}: 이전 저장수 ${previousRecord.savedCount}을 현재 레코드에 복사함`);
-                    }
-                  }
-                  // 저장수 이외 정보 업데이트
-                } else {
-                  // 새 레코드 생성 전 이전 사이클 데이터 확인
-                  const previousRecord = await PlaceDetailResult.findOne({
-                    where: {
-                      place_id: pid,
-                      created_at: { [Op.lt]: cycleStart },
-                      savedCount: { [Op.ne]: null }
-                    },
-                    order: [['created_at', 'DESC']],
-                    transaction: t
-                  });
-                  
-                  // 새 레코드 생성
-                  await PlaceDetailResult.create({
-                    place_id: pid,
-                    place_name: item.name,
-                    category: item.category,
-                    is_restaurant: isRestaurantVal === 1,
-                    last_crawled_at: null,
-                    savedCount: previousRecord ? previousRecord.savedCount : null, // 이전 값 있으면 사용
-                    crawl_status: 'pending'
-                  }, { transaction: t });
-                  
-                  if (previousRecord && previousRecord.savedCount !== null) {
-                    preservedCount++;
-                    logger.debug(`[INFO] place_id=${pid}: 새 레코드 생성 시 이전 저장수 ${previousRecord.savedCount} 재사용`);
-                  }
-                  
-                  insertedCount++;
-                  
-                  // 상세 정보를 위해 detail 크롤링 큐에 추가
-                  if (keywordQueue && typeof keywordQueue.add === 'function') {
-                    await keywordQueue.add(
-                      'unifiedProcess',
-                      { type: 'detail', data: { placeId: pid } },
-                      { 
-                        priority: 6,
-                        jobId: `basic_detail_${pid}_${Date.now()}`,
-                        removeOnComplete: true
-                      }
-                    );
-                  }
-                }
-              });
-            } catch (err) {
-              errorCount++;
-              logger.error(`[ERROR] Failed to process place_id=${pid} with null savedCount: ${err.message}`);
-            }
-          }
-          
-          logger.info(`[BasicCrawler] 저장수 없는 장소 처리 완료: 총 ${placeIdsWithoutSavedCount.length}개 중 ${preservedCount}개 이전 저장수 값 재사용`);
-        }
-      }
-
-      logger.info(`[PLACE_DETAIL] 저장수 처리 완료 - 키워드 "${keywordText}": 저장 ${insertedCount}개, 업데이트 ${updatedCount}개, 오류 ${errorCount}개`);
-      
-      if (errorCount > 0) {
-        logger.warn(`[WARN] place_detail_results 처리 중 ${errorCount}개 항목에서 오류 발생`);
-      }
-    } catch (err) {
-      logger.error(`[ERROR] place_detail_results 저장/업데이트 중 오류:`, err);
+    // 기본 크롤링 성공 시 키워드의 basic_last_crawled_date 업데이트
+    if (success) {
+      await updateKeywordBasicCrawled(keywordId);
     }
-    return items;
+
   } catch (err) {
-    logger.error(`[ERROR][BasicCrawler] 키워드 "${keywordText}" 크롤링 실패:`, err);
+    logger.error(`[ERROR] 키워드 '${keyword}' (ID:${keywordId}) 기본 크롤링 중 심각한 오류: ${err.message}`, err);
+    success = false;
+    errorDetails = err.message;
+    // 여기서 에러를 다시 던져서 BullMQ가 재시도 등을 처리하도록 함
     throw err;
   } finally {
-    if (browser) {
-      await browser.close();
-      logger.info(' 브라우저 종료');
-    }
+    if (page) await page.close();
+    if (context) await context.close();
+    if (browser) await browser.close();
+    logger.info(`[INFO] 키워드 '${keyword}'(ID:${keywordId}) 기본 크롤링 세션 종료. 성공: ${success}, 수집 항목 수: ${crawledItemsCount}`);
   }
-}
 
-async function runCrawler() {
-  try {
-    // Get command line arguments
-    const args = process.argv.slice(2);
-    if (args.length < 1) {
-      console.log('Usage: node basicCrawlerService.js <keyword> [keywordId]');
-      console.log('Example 1: node basicCrawlerService.js "강남 맛집"');
-      console.log('Example 2: node basicCrawlerService.js "강남 맛집" 123');
-      process.exit(1);
-    }
-
-    const keyword = args[0];
-    const keywordId = args[1] ? parseInt(args[1], 10) : null;
-    
-    console.log(`Starting crawler for keyword: "${keyword}"${keywordId ? ` (ID: ${keywordId})` : ''}`);
-    
-    // Run the crawler
-    const results = await crawlKeywordBasic(keyword, keywordId);
-    
-    console.log(`Crawling completed for "${keyword}"`);
-    console.log(`Found ${results.length} items`);
-    
-    // Exit successfully
-    process.exit(0);
-  } catch (error) {
-    console.error('Crawling failed with error:', error);
-    process.exit(1);
-  }
-}
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-
-// Auto-run if this file is executed directly (not imported)
-if (isMainModule) {
-  runCrawler();
+  return {
+    success,
+    keywordId,
+    keyword,
+    itemsCount: crawledItemsCount,
+    error: errorDetails
+  };
 }

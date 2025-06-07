@@ -1,12 +1,13 @@
 import axios from 'axios';
-import path from 'path'; 
-import { fileURLToPath } from 'url'; 
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { createLogger } from '../lib/logger.js';
 import MarketingMessageLog from '../models/MarketingMessageLog.js';
 import ContactInfo from '../models/ContactInfo.js';
 import CustomerInfo from '../models/CustomerInfo.js'; // CustomerInfo 모델 추가
 import { Op } from 'sequelize';
 import CustomerContactMap from '../models/CustomerContactMap.js';
+import { createControllerHelper } from '../utils/controllerHelpers.js'; // Changed to named import
 
 const logger = createLogger('KakaoController');
 
@@ -15,11 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // 프론트엔드 이미지 루트 디렉토리 절대 경로 설정
-// __dirname은 현재 파일(kakaoController.js)의 디렉토리입니다.
-// ../../는 my-backend/controllers/에서 my-backend/로, 다시 프로젝트 루트로 이동합니다.
-// 그런 다음 my-frontend/public/images/datas로 경로를 완성합니다.
 const FRONTEND_IMAGE_ROOT = path.resolve(__dirname, '../../my-frontend/public/images/datas');
-logger.info(`Frontend image root directory: ${FRONTEND_IMAGE_ROOT}`);
+// logger.info(`Frontend image root directory: ${FRONTEND_IMAGE_ROOT}`); // Logging done by helper now
 
 // Kakao 친구명 생성 helper
 function makeKakaoFriendName(company, person) {
@@ -33,160 +31,246 @@ function makeKakaoFriendName(company, person) {
   return `${company.slice(0, cutLen)}-${person}`;
 }
 
-export const addFriends = async (req, res) => {
+export const addFriends = async (req) => { // Removed res
+  const { handleDbOperation, logger: controllerLogger, validateRequiredFields } = createControllerHelper({ // Removed sendSuccess, sendError
+    logger,
+    controllerName: 'KakaoController',
+    actionName: 'addFriends',
+    defaultErrMessage: '카카오 친구 추가 처리 중 오류가 발생했습니다.'
+  });
+
   try {
-    const friends = req.body.friends;
+    validateRequiredFields(req.body, ['friends']);
+    const { friends } = req.body;
+
+    if (!Array.isArray(friends)) {
+      // return sendError(res, 'friends 필드는 배열이어야 합니다.', 400);
+      const error = new Error('friends 필드는 배열이어야 합니다.');
+      error.statusCode = 400;
+      throw error;
+    }
+
     const friendsWithName = friends.map(f => ({
       ...f,
       username: makeKakaoFriendName(f.company_name, f.contact_person)
     }));
+
+    controllerLogger.debug('Sending add-friends request to Kakao service', { count: friendsWithName.length });
     const response = await axios.post('http://localhost:5001/kakao/add-friends', { friends: friendsWithName });
     const resultList = response.data?.results || [];
-    // 결과에서 상태별 전화번호 목록 추출
+    controllerLogger.debug('Received response from Kakao service for add-friends', { resultCount: resultList.length });
+
     const successPhones = resultList.filter(r => r.status === 'success').map(r => r.phone);
     const alreadyPhones = resultList.filter(r => r.status === 'already_registered').map(r => r.phone);
     const failPhones = resultList.filter(r => r.status === 'fail' || r.status === 'not_allowed').map(r => r.phone);
 
-    // 전화번호 기준으로 DB 업데이트
     if (successPhones.length > 0) {
-      await ContactInfo.update(
-        { friend_add_status: 'success' },
-        { where: { phone_number: { [Op.in]: successPhones } } }
+      await handleDbOperation(
+        ContactInfo.update(
+          { friend_add_status: 'success' },
+          { where: { phone_number: { [Op.in]: successPhones } } }
+        ),
+        { operationName: 'Update success friend status' }
       );
     }
     if (alreadyPhones.length > 0) {
-      await ContactInfo.update(
-        { friend_add_status: 'already_registered' },
-        { where: { phone_number: { [Op.in]: alreadyPhones } } }
+      await handleDbOperation(
+        ContactInfo.update(
+          { friend_add_status: 'already_registered' },
+          { where: { phone_number: { [Op.in]: alreadyPhones } } }
+        ),
+        { operationName: 'Update already_registered friend status' }
       );
     }
     if (failPhones.length > 0) {
-      await ContactInfo.update(
-        { friend_add_status: 'fail' },
-        { where: { phone_number: { [Op.in]: failPhones } } }
+      await handleDbOperation(
+        ContactInfo.update(
+          { friend_add_status: 'fail' },
+          { where: { phone_number: { [Op.in]: failPhones } } }
+        ),
+        { operationName: 'Update fail friend status' }
       );
     }
-    return res.json({ success: true, results: resultList });
+    // sendSuccess(res, { results: resultList });
+    return { results: resultList }; // Return data
   } catch (e) {
     let errorMsg = e.message;
-    if (e.response && e.response.data && e.response.data.detail) {
+    let statusCode = 500;
+    if (e.isValidationError) {
+      errorMsg = e.message;
+      statusCode = 400;
+    } else if (e.response && e.response.data && e.response.data.detail) {
       errorMsg = e.response.data.detail;
+      statusCode = e.response.status || 500;
     }
-    return res.status(500).json({ success: false, error: errorMsg });
+    controllerLogger.error('Error in addFriends:', e);
+    // sendError(res, errorMsg, statusCode);
+    const error = new Error(errorMsg);
+    error.statusCode = statusCode;
+    if (e.isAxiosError && e.response) { // Capture more details from Axios errors
+        error.externalResponse = {
+            status: e.response.status,
+            data: e.response.data
+        };
+    }
+    throw error; // Throw error
   }
 };
 
-export const sendMessages = async (req, res) => {
+export const sendMessages = async (req) => { // Removed res
+  const { handleDbOperation, logger: controllerLogger, validateRequiredFields } = createControllerHelper({ // Removed sendSuccess, sendError
+    logger,
+    controllerName: 'KakaoController',
+    actionName: 'sendMessages',
+    defaultErrMessage: '카카오 메시지 전송 처리 중 오류가 발생했습니다.'
+  });
+
   try {
-    const message_groups = req.body.message_groups;
-    // original groups for logging content
-    const originalGroups = JSON.parse(JSON.stringify(message_groups)); // Deep copy for logging
+    validateRequiredFields(req.body, ['message_groups']);
+    const { message_groups } = req.body;
+
     if (!Array.isArray(message_groups)) {
-      return res.status(400).json({ success: false, message: 'message_groups 배열이 필요합니다.' });
+      // return sendError(res, 'message_groups 필드는 배열이어야 합니다.', 400);
+      const error = new Error('message_groups 필드는 배열이어야 합니다.');
+      error.statusCode = 400;
+      throw error;
     }
-    // image type content 배열 분리 및 절대 경로 변환
+
+    const originalGroups = JSON.parse(JSON.stringify(message_groups));
+    controllerLogger.info(`Frontend image root directory: ${FRONTEND_IMAGE_ROOT}`);
+
+
     const flattenedGroups = message_groups.map(group => ({
       username: group.username,
       messages: group.messages.flatMap(msg => {
         if (msg.type === 'image') {
-          // content가 쉼표로 구분된 상대 경로일 수 있음
           let contentArray = typeof msg.content === 'string'
             ? msg.content.split(',').map(p => p.trim()).filter(p => p)
             : Array.isArray(msg.content)
               ? msg.content
               : [];
-          // 절대 경로로 변환
           const absArray = contentArray.map(relativePath => {
             const cleaned = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
             return path.join(FRONTEND_IMAGE_ROOT, cleaned);
           }).filter(p => p.startsWith(FRONTEND_IMAGE_ROOT));
-          if (absArray.length === 0) return [];
-          // 여러 파일이 있으면 하나의 message로 합침
+
+          if (absArray.length === 0) {
+            controllerLogger.warn('Image message with no valid content after path transformation, skipping message part.', { originalContent: msg.content });
+            return [];
+          }
           return [{ type: 'image', content: absArray.join(',') }];
         }
-        // text or other types 그대로 전달
         return [{ type: msg.type, content: msg.content }];
       })
     }));
 
-    // FastAPI에 메시지 전송 (절대 경로가 포함된 그룹 전송)
-    logger.info(`Sending flattened groups to FastAPI: ${JSON.stringify(flattenedGroups)}`);
+    controllerLogger.debug(`Sending ${flattenedGroups.length} flattened groups to FastAPI.`);
     const response = await axios.post('http://localhost:5001/kakao/send-messages', { message_groups: flattenedGroups });
     const results = response.data.results || [];
+    controllerLogger.debug(`Received ${results.length} results from FastAPI.`);
 
-    // 마케팅 로그 저장
     const createdLogs = [];
     for (const r of results) {
       const { username, phone, status, reason } = r;
-      // 연락처 조회: username에서 contact_person 부분만 사용 (담당자명)
       let contact = null;
       let contactPersonName = '';
-      
+
       if (username && username.includes('-')) {
-        // '회사명-담당자명' 형식에서 담당자명 추출
         const parts = username.split('-');
-        contactPersonName = parts[parts.length - 1].trim(); // 마지막 부분을 담당자명으로 사용
+        contactPersonName = parts[parts.length - 1].trim();
       } else {
-        // '-'가 없으면 전체를 담당자명으로 간주
         contactPersonName = username;
       }
-      
-      // contact_person으로만 연락처 조회
+
       if (contactPersonName) {
-        contact = await ContactInfo.findOne({ 
-          where: { contact_person: contactPersonName },
-          include: [{ 
-            model: CustomerInfo,
-            through: CustomerContactMap
-          }]
-        });
+        try {
+          contact = await handleDbOperation(
+            ContactInfo.findOne({
+              where: { contact_person: contactPersonName },
+              include: [{ model: CustomerInfo, through: CustomerContactMap }]
+            }),
+            { operationName: 'FindContactInfoForLogging', suppressError: true } // suppressError to allow custom handling below
+          );
+        } catch (dbError) {
+            controllerLogger.error(`Error finding contact for ${contactPersonName}: ${dbError.message}. Skipping log.`);
+            continue;
+        }
       }
-      
+
       if (!contact) {
-         logger.warn(`Contact not found for contact_person: ${contactPersonName} (username: ${username}). Skipping log.`);
-         continue;
-      }
-      
-      // 연결된 고객 정보 확인
-      if (!contact.CustomerInfos || contact.CustomerInfos.length === 0) {
-        logger.warn(`Contact ${contact.id} (${contactPersonName})에 연결된 CustomerInfo 없음, 로그 생성 건너뜀.`);
+        controllerLogger.warn(`Contact not found for contact_person: ${contactPersonName} (username: ${username}). Skipping log.`);
         continue;
       }
-      
-      const customer = contact.CustomerInfos[0]; // 첫 번째 연결된 고객 정보 사용
+
+      if (!contact.CustomerInfos || contact.CustomerInfos.length === 0) {
+        controllerLogger.warn(`Contact ${contact.id} (${contactPersonName}) has no associated CustomerInfo. Skipping log.`);
+        continue;
+      }
+
+      const customer = contact.CustomerInfos[0];
       const customer_id = customer.id;
-      
-      // 메시지 내용 추출: originalGroups에서 해당 username의 messages 합치기
-      // 이미지 경로는 원래 상대 경로로 로그에 남기도록 originalGroups 사용
+
       const originalGroup = originalGroups.find(g => g.username === username);
       const contentString = originalGroup && Array.isArray(originalGroup.messages)
         ? originalGroup.messages.map(m => {
-            // 이미지 content가 배열이면 join해서 문자열로 만듦
             if (m.type === 'image' && Array.isArray(m.content)) {
               return `[Image: ${m.content.join(', ')}]`;
             }
             return m.content;
-          }).join(' | ') // 메시지 구분자 변경
+          }).join(' | ')
         : '';
-      // 로그 생성
-      const logEntry = await MarketingMessageLog.create({
-        customer_id: customer_id,
-        contact_id: contact.id,
-        message_content: contentString || phone || '', // contentString 우선 사용
-        status: status === 'success' ? 'success' : 'failed', // 'fail' -> 'failed' 로 수정
-        sent_at: new Date(),
-        fail_reason: status !== 'success' ? reason : null // 실패 사유 추가
-      });
-      createdLogs.push(logEntry);
+      
+      try {
+        const logEntry = await handleDbOperation(
+          MarketingMessageLog.create({
+            customer_id: customer_id,
+            contact_id: contact.id,
+            message_content: contentString || phone || '',
+            status: status === 'success' ? 'success' : 'failed',
+            sent_at: new Date(),
+            fail_reason: status !== 'success' ? reason : null
+          }),
+          { operationName: 'CreateMarketingMessageLog', suppressError: true } // suppressError to allow custom handling below
+        );
+        if (logEntry) { // handleDbOperation might return null if suppressed and failed
+            createdLogs.push(logEntry);
+        } else {
+            controllerLogger.error(`Failed to create marketing log for customer ${customer_id}, contact ${contact.id} (username: ${username}) due to a suppressed error during DB operation.`);
+        }
+      } catch (dbError) {
+          controllerLogger.error(`Error creating marketing log for ${username}: ${dbError.message}.`);
+          // Continue to next result even if one log fails
+      }
     }
-    logger.info(`Marketing logs created: ${createdLogs.length}`);
-    return res.json({ success: true, results });
+    controllerLogger.info(`Marketing logs created: ${createdLogs.length}`);
+    // sendSuccess(res, { results });
+    return { results }; // Return data
   } catch (error) {
-    logger.error('sendMessages 처리 중 오류:', error);
-    // 에러 응답에 상세 정보 포함 (개발/디버깅 시 유용)
-    const errorMessage = error.response?.data?.detail || error.message;
-    // 스택 트레이스 로깅 (선택적으로 활성화)
-    // logger.error(error.stack);
-    return res.status(500).json({ success: false, message: errorMessage, error: error.stack }); // 스택 정보 포함
+    let errorMsg = error.message;
+    let statusCode = 500;
+
+    if (error.isValidationError) {
+        errorMsg = error.message;
+        statusCode = 400;
+    } else if (error.response?.data?.detail) {
+        errorMsg = error.response.data.detail;
+        statusCode = error.response.status || 500;
+    } else if (error.isAxiosError) {
+        errorMsg = `External API call failed: ${error.message}`;
+        statusCode = error.response?.status || 503; // Service Unavailable or specific error
+    }
+    
+    controllerLogger.error('Error in sendMessages:', error.stack || error);
+    // sendError(res, errorMsg, statusCode, { stack: error.stack }); // Include stack in dev/debug
+    const err = new Error(errorMsg); // Renamed to avoid conflict with outer 'error'
+    err.statusCode = statusCode;
+    err.stack = error.stack; // Preserve original stack
+     if (error.isAxiosError && error.response) { // Capture more details from Axios errors
+        err.externalResponse = {
+            status: error.response.status,
+            data: error.response.data
+        };
+    }
+    throw err; // Throw error
   }
 };

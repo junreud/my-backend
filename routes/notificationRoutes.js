@@ -10,10 +10,10 @@ import {
 } from '../controllers/notificationController.js';
 
 // Utils & Middleware
-import { createRouterWithAuth, handleValidationErrors } from '../middlewares/common.js';
+import { createRouterWithAuth, handleValidationErrors, asyncHandler } from '../middlewares/common.js';
 
 const router = express.Router();
-const { authAndLog, sendSuccess, sendError, asyncHandler, logger } = createRouterWithAuth('notificationRoutes');
+const { authAndLog, sendSuccess, sendError, logger } = createRouterWithAuth('notificationRoutes');
 
 // JWT 인증 및 요청 로깅 적용
 router.use(authAndLog);
@@ -24,21 +24,21 @@ router.get(
   query('unread').optional().isBoolean().toBoolean(),
   handleValidationErrors,
   asyncHandler(async (req, res) => {
-    logger.debug('getNotifications 호출');
-    const data = await getNotifications(req, res);
-    return sendSuccess(res, data);
+    const notifications = await getNotifications(req);
+    return sendSuccess(res, notifications);
   })
 );
 
 // POST /api/notifications
 router.post(
   '/',
-  body('title').notEmpty().withMessage('title 필요'),
+  body('userId').isInt().toInt(),
+  body('message').notEmpty(),
+  body('type').notEmpty(),
   handleValidationErrors,
   asyncHandler(async (req, res) => {
-    logger.debug('createNotification 호출');
-    const data = await createNotification(req, res);
-    return sendSuccess(res, data, '알림 생성 완료', 201);
+    const notification = await createNotification(req);
+    return sendSuccess(res, notification, '알림이 생성되었습니다.', 201);
   })
 );
 
@@ -48,9 +48,8 @@ router.patch(
   param('id').isInt().toInt(),
   handleValidationErrors,
   asyncHandler(async (req, res) => {
-    logger.debug('markAsRead 호출');
-    const data = await markAsRead(req, res);
-    return sendSuccess(res, data);
+    const notification = await markAsRead(req);
+    return sendSuccess(res, notification, '알림을 읽음으로 표시했습니다.');
   })
 );
 
@@ -60,9 +59,11 @@ router.delete(
   param('id').isInt().toInt(),
   handleValidationErrors,
   asyncHandler(async (req, res) => {
-    logger.debug('deleteNotification 호출');
-    const data = await deleteNotification(req, res);
-    return sendSuccess(res, data);
+    const result = await deleteNotification(req);
+    if (result.alreadyDeleted) {
+      return sendSuccess(res, null, '이미 삭제된 알림입니다.', 204);
+    }
+    return sendSuccess(res, null, '알림이 삭제되었습니다.', 204);
   })
 );
 

@@ -19,11 +19,13 @@ router.post(
   '/',
   upload.single('screenshot'),
   body('title').notEmpty().withMessage('제목이 필요합니다.'),
+  body('category').notEmpty().withMessage('카테고리가 필요합니다.'),
+  body('description').notEmpty().withMessage('설명이 필요합니다.'),
   handleValidationErrors,
   asyncHandler(async (req, res) => {
     logger.debug('createBugReport 처리 시작');
-    const report = await createBugReport(req, res);
-    return sendSuccess(res, report, '버그 리포트가 생성되었습니다.', 201);
+    const result = await createBugReport(req);
+    return sendSuccess(res, result.data, result.message, result.statusCode);
   })
 );
 

@@ -70,3 +70,6 @@ export const responseHelpers = {
   unauthorized: (res, message = 'Unauthorized') => sendError(res, 401, message),
   forbidden: (res, message = 'Forbidden') => sendError(res, 403, message)
 };
+
+// asyncHandler를 직접 export하여 다른 모듈에서 import 가능하도록 수정
+export { asyncHandler };

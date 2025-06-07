@@ -1,136 +1,155 @@
 import Place from '../models/Place.js';
 import PlaceDetailResult from '../models/PlaceDetailResult.js';
 import { createLogger } from '../lib/logger.js';
+import { createControllerHelper } from '../utils/controllerHelpers.js'; // Added
 
 const logger = createLogger('PlaceController');
+// const { sendSuccess, sendError, handleDbOperation, validateRequiredFields } = createControllerHelper('PlaceController'); // Removed
 
 /**
  * Get all places associated with a user
  */
-export const getUserPlaces = async (req, res) => {
+export const getUserPlaces = async (req) => {
+  const { handleDbOperation, validateRequiredFields, logger: controllerLogger } = createControllerHelper({ controllerName: 'PlaceController', actionName: 'getUserPlaces' });
   try {
     const { userId } = req.query;
     
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
+    const validationError = validateRequiredFields(req.query, ['userId']);
+    if (validationError) {
+      // Throw a custom error that can be handled by the router
+      const error = new Error(validationError.message);
+      error.statusCode = 400;
+      throw error;
     }
     
-    // Place 테이블에서 user_id로 조회
-    const places = await Place.findAll({
-      where: { user_id: userId },
-      attributes: ['id', 'place_id', 'place_name', 'category', 'isNewlyOpened']
-    });
-    
-    // 각 place에 대해 place_detail_results에서 최신 리뷰 카운트 조회
-    const formattedPlaces = await Promise.all(places.map(async place => {
-      const placeData = place.toJSON();
+    const places = await handleDbOperation(async () => {
+      return Place.findAll({
+        where: { user_id: userId },
+        attributes: ['id', 'place_id', 'place_name', 'category', 'isNewlyOpened'],
+        raw: true, // Get plain JSON objects
+      });
+    }, "사용자 장소 목록 조회(기본)");
+
+    const formattedPlaces = await Promise.all(places.map(async (place) => {
       let blog_review_count = null;
       let receipt_review_count = null;
       try {
         const latestDetail = await PlaceDetailResult.findOne({
-          where: { place_id: placeData.place_id },
-          order: [['last_crawled_at', 'DESC']]
+          where: { place_id: place.place_id },
+          order: [['last_crawled_at', 'DESC']],
+          attributes: ['blog_review_count', 'receipt_review_count'],
+          raw: true, // Get plain JSON object
         });
         if (latestDetail) {
           blog_review_count = latestDetail.blog_review_count ?? null;
           receipt_review_count = latestDetail.receipt_review_count ?? null;
         }
       } catch (err) {
-        logger.error('Error fetching review counts from PlaceDetailResult:', err);
+        controllerLogger.error(`Error fetching review counts for place_id ${place.place_id}:`, err);
       }
       return {
-        ...placeData,
+        id: place.id,
+        place_id: place.place_id,
+        place_name: place.place_name,
+        category: place.category,
+        isNewlyOpened: place.isNewlyOpened,
         blog_review_count,
         receipt_review_count,
         platform: 'naver',
       };
     }));
     
-    return res.status(200).json(formattedPlaces);
+    return formattedPlaces; // Return data
   } catch (error) {
-    console.error('Error fetching user places:', error);
-    return res.status(500).json({ error: 'Failed to fetch places' });
+    controllerLogger.error('Error fetching user places:', error);
+    throw error; // Rethrow error
   }
 };
 
 /**
  * Check if a place is already saved by the user
  */
-export const checkPlace = async (req, res) => {
+export const checkPlace = async (req) => {
+  const { handleDbOperation, validateRequiredFields, logger: controllerLogger } = createControllerHelper({ controllerName: 'PlaceController', actionName: 'checkPlace' });
   try {
-    const { userId, place_id } = req.body;
+    const { userId, place_id } = req.body; 
     
-    if (!userId || !place_id) {
-      return res.status(400).json({ error: 'User ID and place ID are required' });
+    const validationError = validateRequiredFields(req.body, ['userId', 'place_id']);
+    if (validationError) {
+      const error = new Error(validationError.message);
+      error.statusCode = 400;
+      throw error;
     }
     
-    // Check if the place exists in the database for this user (platform removed)
-    const place = await Place.findOne({
-      where: { 
-        user_id: userId,
-        place_id: place_id
-      }
-    });
+    const place = await handleDbOperation(async () => {
+      return Place.findOne({
+        where: { 
+          user_id: userId,
+          place_id: place_id
+        },
+        raw: true, // Get plain JSON object
+      });
+    }, "장소 중복 확인");
     
     if (place) {
-      // Place exists for this user
-      return res.status(200).json({ 
+      return { // Return data
         exists: true,
         place: {
-          ...place.toJSON(),
-          platform: 'naver' // Default platform for frontend compatibility
+          ...place, // Spread raw object
+          platform: 'naver'
         }
-      });
+      };
     } else {
-      // Place doesn't exist for this user
-      return res.status(200).json({ 
-        exists: false 
-      });
+      return { exists: false }; // Return data
     }
   } catch (error) {
-    console.error('Error checking place:', error);
-    return res.status(500).json({ error: 'Failed to check place' });
+    controllerLogger.error('Error checking place:', error);
+    throw error; // Rethrow error
   }
 };
 
 /**
  * Create a new place
  */
-export const createPlace = async (req, res) => {
+export const createPlace = async (req) => {
+  const { handleDbOperation, validateRequiredFields, logger: controllerLogger } = createControllerHelper({ controllerName: 'PlaceController', actionName: 'createPlace' });
   try {
     const { userId, place_name, category, url } = req.body;
     
-    if (!userId || !place_name || !url) {
-      return res.status(400).json({ error: 'User ID, place name, and URL are required' });
+    const validationError = validateRequiredFields(req.body, ['userId', 'place_name', 'url']);
+    if (validationError) {
+      const error = new Error(validationError.message);
+      error.statusCode = 400;
+      throw error;
     }
     
-    // Extract place_id from URL
-    let place_id;
-    // We'll assume Naver URLs only for now
+    let place_id_extracted; // Renamed to avoid conflict with place_id from model
     const match = url.match(/https?:\/\/(m\.)?place\.naver\.com\/(restaurant|place)\/(\d+)/);
     if (!match) {
-      return res.status(400).json({ error: 'Invalid Naver place URL' });
+      const error = new Error('Invalid Naver place URL');
+      error.statusCode = 400;
+      throw error;
     }
-    place_id = match[3];
+    place_id_extracted = match[3];
     
-    // Save place without platform and url fields
-    const place = await Place.create({
-      place_id,
-      place_name,
-      category,
-      user_id: userId,
-      isNewlyOpened: false
-    });
+    const newPlace = await handleDbOperation(async () => { // Renamed place to newPlace
+      return Place.create({
+        place_id: place_id_extracted, // Use extracted value
+        place_name,
+        category,
+        user_id: userId,
+        isNewlyOpened: false
+      });
+    }, "신규 장소 생성");
     
-    // Add platform for frontend compatibility
-    return res.status(201).json({ 
+    return { // Return data
       place: {
-        ...place.toJSON(),
+        ...(newPlace.toJSON()), // Ensure plain object
         platform: 'naver'
       }
-    });
+    };
   } catch (error) {
-    console.error('Error creating place:', error);
-    return res.status(500).json({ error: 'Failed to create place' });
+    controllerLogger.error('Error creating place:', error);
+    throw error; // Rethrow error
   }
 };

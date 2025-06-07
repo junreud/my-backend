@@ -20,30 +20,22 @@ import {
 } from "../controllers/keywordController.js";
 
 // Utils & Middleware
-import { authenticateJWT, asyncHandler } from '../middlewares/auth.js';
-import { sendSuccess, sendError } from '../lib/response.js';
-import createLogger from '../lib/logger.js';
+import { createRouterWithAuth, handleValidationErrors, asyncHandler } from '../middlewares/common.js';
 
 const router = express.Router()
-const logger = createLogger('keywordRoutes');
+const { authAndLog, sendSuccess, sendError, logger } = createRouterWithAuth('keywordRoutes');
 
-// 공통 JWT 인증
-router.use(authenticateJWT)
-
-// 라우터 레벨 미들웨어로 모든 요청에 대해 로그 추가
-router.use((req, res, next) => {
-  logger.debug(`키워드 라우터 요청: ${req.method} ${req.originalUrl}`);
-  next();
-});
+// 공통 JWT 인증 및 로깅
+router.use(authAndLog);
 
 // (1) URL 정규화
 router.post(
   "/normalize",
   body('url').isURL().withMessage('올바른 URL이 필요합니다.'),
+  body('platform').notEmpty().withMessage('platform이 필요합니다.'), // Added platform validation
+  handleValidationErrors, // Added common validation error handler
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await normalizeUrlHandler(req, res);
+    const data = await normalizeUrlHandler(req);
     return sendSuccess(res, data);
   })
 )
@@ -51,23 +43,25 @@ router.post(
 // (2) places 테이블 저장
 router.post(
   "/store-place",
-  body('place').exists().withMessage('place 정보가 필요합니다.'),
+  body('user_id').isInt().withMessage('user_id는 정수여야 합니다.'),
+  body('place_id').isString().notEmpty().withMessage('place_id는 문자열이어야 합니다.'),
+  body('place_name').isString().notEmpty().withMessage('place_name은 문자열이어야 합니다.'),
+  body('category').optional().isString(),
+  body('platform').optional().isString(),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await storePlaceHandler(req, res);
-    return sendSuccess(res, data);
+    const result = await storePlaceHandler(req);
+    return sendSuccess(res, result.data, result.message);
   })
 )
 
 // (3) ChatGPT 키워드 생성
 router.post(
   "/chatgpt",
-  body('prompt').isString().withMessage('prompt 문자열이 필요합니다.'),
+  body('placeInfo').isObject().withMessage('placeInfo 객체가 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await chatgptKeywordsHandler(req, res);
+    const data = await chatgptKeywordsHandler(req);
     return sendSuccess(res, data);
   })
 )
@@ -75,12 +69,11 @@ router.post(
 // (4) 키워드 조합
 router.post(
   "/combine",
-  body('location').isString().withMessage('location 문자열이 필요합니다.'),
-  body('features').isArray().withMessage('features 배열이 필요합니다.'),
+  body('locationKeywords').isArray().withMessage('locationKeywords 배열이 필요합니다.'),
+  body('featureKeywords').isArray().withMessage('featureKeywords 배열이 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await combineLocationAndFeaturesHandler(req, res);
+    const data = await combineLocationAndFeaturesHandler(req);
     return sendSuccess(res, data);
   })
 )
@@ -88,11 +81,11 @@ router.post(
 // (5) 검색량 조회
 router.post(
   "/search-volume",
-  body('keywords').isArray().withMessage('keywords 배열이 필요합니다.'),
+  body('candidateKeywords').isArray().withMessage('candidateKeywords 배열이 필요합니다.'),
+  body('normalizedUrl').optional().isURL().withMessage('normalizedUrl은 유효한 URL이어야 합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await searchVolumesHandler(req, res);
+    const data = await searchVolumesHandler(req);
     return sendSuccess(res, data);
   })
 )
@@ -100,60 +93,60 @@ router.post(
 // (6) 그룹핑
 router.post(
   "/group",
-  body('keywords').isArray().withMessage('keywords 배열이 필요합니다.'),
+  body('externalDataList').isArray().withMessage('externalDataList 배열이 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await groupKeywordsHandler(req, res);
-    return sendSuccess(res, data);
+    const result = await groupKeywordsHandler(req);
+    return sendSuccess(res, result, result.message);
   })
 )
 
 router.post(
   "/save-grouped",
-  body('keywords').isArray().withMessage('keywords 배열이 필요합니다.'),
+  body('finalKeywords').isArray().withMessage('finalKeywords 배열이 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await saveGroupedKeywordsHandler(req, res);
-    return sendSuccess(res, data);
+    const result = await saveGroupedKeywordsHandler(req);
+    return sendSuccess(res, result.data, result.message);
   })
 )
 
 router.post(
   "/save-selected",
+  body('placeId').isInt().withMessage('placeId는 정수여야 합니다.'),
   body('keywords').isArray().withMessage('keywords 배열이 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await saveSelectedKeywordsHandler(req, res);
-    return sendSuccess(res, data);
+    const result = await saveSelectedKeywordsHandler(req);
+    return sendSuccess(res, result.data, result.message);
   })
 )
 
 // 사용자 키워드 추가
 router.post(
   "/user-keywords",
-  body('keyword').isString().withMessage('keyword 문자열이 필요합니다.'),
+  body('userId').isInt().withMessage('userId는 정수여야 합니다.'),
+  body('placeId').isInt().withMessage('placeId는 정수여야 합니다.'),
+  body('keyword').isString().notEmpty().withMessage('keyword 문자열이 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
-    const data = await addUserKeywordHandler(req, res);
-    return sendSuccess(res, data);
+    const result = await addUserKeywordHandler(req);
+    return sendSuccess(res, result.data, result.message, result.statusCode);
   })
 )
 
 // 키워드 변경 - 디버그 로그 추가
 router.post(
   "/change-user-keyword",
-  body('oldKeyword').isString().withMessage('oldKeyword 문자열이 필요합니다.'),
-  body('newKeyword').isString().withMessage('newKeyword 문자열이 필요합니다.'),
+  body('userId').isInt().withMessage('userId는 정수여야 합니다.'),
+  body('placeId').isInt().withMessage('placeId는 정수여야 합니다.'),
+  body('oldKeywordId').isInt().withMessage('oldKeywordId는 정수여야 합니다.'),
+  body('newKeyword').isString().notEmpty().withMessage('newKeyword 문자열이 필요합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendError(res, 400, '검증 오류', errors.array());
     logger.debug('change-user-keyword', req.body);
-    const data = await changeUserKeywordHandler(req, res);
-    return sendSuccess(res, data);
+    const result = await changeUserKeywordHandler(req);
+    return sendSuccess(res, result.data, result.message);
   })
 )
 
@@ -161,7 +154,7 @@ router.post(
 router.get(
   '/main-status',
   asyncHandler(async (req, res) => {
-    const data = await getMainKeywordStatusHandler(req, res);
+    const data = await getMainKeywordStatusHandler(req);
     return sendSuccess(res, data);
   })
 );
@@ -169,8 +162,10 @@ router.get(
 // 업체별 키워드 순위 조회 API
 router.get(
   "/keyword-rankings-by-business",
+  query('placeId').isInt().withMessage('placeId는 정수여야 합니다.'), // Added validation for query param
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const data = await getKeywordRankingsByBusinessHandler(req, res);
+    const data = await getKeywordRankingsByBusinessHandler(req);
     return sendSuccess(res, data);
   })
 );
@@ -178,8 +173,11 @@ router.get(
 // 업체별 키워드 히스토리 조회 (인증 필요)
 router.get(
   "/history",
+  query('placeId').isInt().withMessage('placeId는 정수여야 합니다.'),
+  query('keywordId').isInt().withMessage('keywordId는 정수여야 합니다.'),
+  handleValidationErrors,
   asyncHandler(async (req, res) => {
-    const data = await getKeywordHistoryHandler(req, res);
+    const data = await getKeywordHistoryHandler(req);
     return sendSuccess(res, data);
   })
 );

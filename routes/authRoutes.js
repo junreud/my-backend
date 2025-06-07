@@ -22,6 +22,25 @@ const isDevelopment = () => process.env.NODE_ENV === 'development';
 // Always secure cookies for sameSite='none' cross-site scenarios (dev and prod)
 const getSecureCookieSetting = () => true;
 
+// 개발환경에 맞는 쿠키 설정
+const getCookieOptions = () => {
+  if (isDevelopment()) {
+    return {
+      httpOnly: true,
+      secure: true,  // localhost에서도 HTTPS 사용하므로 true
+      sameSite: 'lax', // 개발환경에서는 lax 사용
+      path: '/',
+    };
+  } else {
+    return {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none', // 프로덕션에서는 none 사용
+      path: '/',
+    };
+  }
+};
+
 // 환경에 따른 프론트엔드 URL 설정
 const getFrontendUrl = () => {
   return process.env.NODE_ENV === 'development' 
@@ -40,18 +59,9 @@ router.post(
     try {
       const result = await authController.checkEmailAndPassword(req);
       if (result.refreshToken) {
-        res.cookie('refreshToken', result.refreshToken, {
-          httpOnly: true,
-          secure: getSecureCookieSetting(),
-          sameSite: 'none',
-          path: '/',
-        });
-        res.cookie('token', result.data.accessToken, {
-          httpOnly: true,
-          secure: getSecureCookieSetting(),
-          sameSite: 'none',
-          path: '/',
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie('refreshToken', result.refreshToken, cookieOptions);
+        res.cookie('token', result.data.accessToken, cookieOptions);
       }
       return sendSuccess(res, { accessToken: result.data.accessToken, user: result.data.user }, result.message);
     } catch (error) {
@@ -96,12 +106,8 @@ router.get('/google/callback', (req, res, next) => {
     } else {
       try {
         const tokens = await issueTokens(user.id);
-        res.cookie('refreshToken', tokens.refreshToken, {
-          httpOnly: true,
-          secure: getSecureCookieSetting(),
-          sameSite: 'none',
-          path: '/',
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie('refreshToken', tokens.refreshToken, cookieOptions);
         return res.redirect(
           `${frontendUrl}/oauth-redirect?accessToken=${tokens.accessToken}`
         );
@@ -153,12 +159,8 @@ router.get("/kakao/callback", (req, res, next) => {
     } else {
       try {
         const tokens = await issueTokens(user.id);
-        res.cookie("refreshToken", tokens.refreshToken, {
-          httpOnly: true,
-          secure: getSecureCookieSetting(),
-          sameSite: "none",
-          path: '/',
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie("refreshToken", tokens.refreshToken, cookieOptions);
         return res.redirect(
           `${frontendUrl}/oauth-redirect?accessToken=${tokens.accessToken}`
         );
@@ -181,9 +183,8 @@ router.post(
     try {
       const result = await authController.signup(req);
       if (result.refreshToken) {
-        res.cookie('refreshToken', result.refreshToken, {
-          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie('refreshToken', result.refreshToken, cookieOptions);
       }
       return sendSuccess(res, result.data, result.message);
     } catch (error) {
@@ -229,9 +230,8 @@ router.post(
     try {
       const result = await authController.checkEmailAndPassword(req);
       if (result.refreshToken) {
-        res.cookie('refreshToken', result.refreshToken, {
-          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie('refreshToken', result.refreshToken, cookieOptions);
       }
       return sendSuccess(res, result.data, result.message);
     } catch (error) {
@@ -249,9 +249,8 @@ router.post(
     try {
       const result = await authController.linkAccounts(req);
       if (result.refreshToken) {
-        res.cookie('refreshToken', result.refreshToken, {
-          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie('refreshToken', result.refreshToken, cookieOptions);
       }
       return sendSuccess(res, result.data, result.message);
     } catch (error) {
@@ -269,9 +268,8 @@ router.post(
     try {
       const result = await authController.addInfo(req);
       if (result.refreshToken) {
-        res.cookie('refreshToken', result.refreshToken, {
-          httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
-        });
+        const cookieOptions = getCookieOptions();
+        res.cookie('refreshToken', result.refreshToken, cookieOptions);
       }
       return sendSuccess(res, result.data, result.message);
     } catch (error) {
@@ -285,9 +283,8 @@ router.post(
     try {
       const result = await authController.refresh(req);
       if (result.data && result.data.refreshToken) {
-         res.cookie('refreshToken', result.data.refreshToken, {
-            httpOnly: true, secure: getSecureCookieSetting(), sameSite: 'none', path: '/'
-        });
+         const cookieOptions = getCookieOptions();
+         res.cookie('refreshToken', result.data.refreshToken, cookieOptions);
       }
       // result.data가 이미 { accessToken, refreshToken } 형태이므로 직접 전달
       return sendSuccess(res, result.data);
@@ -305,14 +302,8 @@ router.post(
       const result = await authController.logout(req);
       if (result.clearCookies) {
         result.clearCookies.forEach(cookie => {
-          const cookieOptions = {
-             httpOnly: true, 
-             secure: getSecureCookieSetting(), 
-             sameSite: "none", 
-             path: '/', 
-             ...cookie.options 
-            };
-          res.clearCookie(cookie.name, cookieOptions);
+          const cookieOptions = getCookieOptions();
+          res.clearCookie(cookie.name, { ...cookieOptions, ...cookie.options });
         });
       }
       if (result.statusCode === 204) {
