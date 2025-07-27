@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pyautogui
+pydantic
+opencv-python
+pyobjc
+pytesseract
+pynput
+
+# macOS PyObjC frameworks
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+cairosvg

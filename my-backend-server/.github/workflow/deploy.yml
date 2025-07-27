@@ -1,0 +1,47 @@
+name: Deploy to Mac Server - Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-job:
+    runs-on: self-hosted  # 혹은: runs-on: ubuntu-latest
+    steps:
+      # 1) 저장소 체크아웃
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      # 2) Node 버전 지정 (필요 시)
+      - name: Use Node.js 23.7
+        uses: actions/setup-node@v3
+        with:
+          node-version: 23.7
+
+      # 3) .env 파일 생성 (Secrets에 저장된 PRODUCTION_ENV 내용 사용)
+      - name: Create .env file
+        run: |
+          echo "${{ secrets.PRODUCTION_ENV }}" > .env
+
+      # 4) 설치 (Express, Sequelize, etc.)
+      - name: Install dependencies
+        run: |
+          npm install
+
+      # 5) (선택) TypeScript 빌드 or 기타 빌드 스크립트
+      # - name: Build
+      #   run: |
+      #     npm run build
+
+      # 6) DB 마이그레이션 (Sequelize CLI)
+      - name: Run DB Migrations
+        run: |
+          npx sequelize-cli db:migrate --env production
+
+      # 7) PM2로 서버 재시작 (애플리케이션 실행)
+      - name: Restart Backend Server
+        run: |
+          pm2 stop app || true
+          pm2 start app.js
+          # or pm2 start 'npm run start'
