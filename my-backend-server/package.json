@@ -1,0 +1,64 @@
+{
+  "name": "my-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "NODE_ENV=production node server.js",
+    "dev": "cross-env NODE_ENV=development node server.js",
+    "dev:4001": "cross-env NODE_ENV=development PORT=4001 node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/junreud/my-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/junreud/my-backend/issues"
+  },
+  "homepage": "https://github.com/junreud/my-backend#readme",
+  "description": "",
+  "dependencies": {
+    "@aws-sdk/client-ses": "^3.750.0",
+    "@google-cloud/vision": "^5.2.0",
+    "aws-sdk": "^2.1692.0",
+    "axios": "^1.7.9",
+    "bcrypt": "^5.1.1",
+    "bull": "^4.16.5",
+    "cheerio": "^1.0.0",
+    "cookie-parser": "^1.4.7",
+    "coolsms-node-sdk": "^2.1.0",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-validator": "^7.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.0",
+    "mysql2": "^3.12.0",
+    "node-cron": "^3.0.3",
+    "openai": "^4.85.4",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "passport-jwt": "^4.0.1",
+    "passport-kakao": "^1.0.1",
+    "passport-local": "^1.0.0",
+    "playwright": "^1.53.1",
+    "puppeteer": "^24.3.0",
+    "redis": "^4.7.0",
+    "sequelize": "^6.37.5",
+    "sequelize-cli": "^6.6.2",
+    "socket.io": "^4.8.1",
+    "tesseract.js": "^6.0.1",
+    "undici": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.9"
+  }
+}

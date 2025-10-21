@@ -1,0 +1,35 @@
+# Git 관련
+.git
+.gitignore
+
+# 의존성 모듈
+node_modules
+npm-debug.log*
+
+# 환경 파일
+.env.local
+.env.*.local
+
+# 로그 파일
+*.log
+
+# 임시 파일
+.DS_Store
+Thumbs.db
+
+# IDE 설정
+.vscode
+.idea
+
+# 업로드 파일 (개발시 제외)
+uploads/
+screenshots/
+
+# 테스트 결과
+coverage
+.nyc_output
+
+# Docker 관련
+Dockerfile*
+docker-compose*
+.dockerignore

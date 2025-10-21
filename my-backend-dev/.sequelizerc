@@ -1,0 +1,10 @@
+// .sequelizerc (CommonJS)
+// common js 형태로 작성된 파일로, sequelize-cli가 실행될 때 이 파일을 읽어들여 설정값을 가져온다.
+const path = require('path');
+
+module.exports = {
+  config: path.resolve('config', 'config.js'),
+  'models-path': path.resolve('models'),
+  'migrations-path': path.resolve('migrations'),
+  'seeders-path': path.resolve('seeders'),
+};
